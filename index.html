@@ -1,0 +1,4260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaxFlow — Bank Statement Analysis</title>
+
+<!-- pdf-lib for in-browser PDF decryption -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<!-- pdf.js for rendering PDF pages to canvas (vision extraction) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- ExcelJS for .xlsx export/import with real dropdown data validation on the Category column -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+
+<style>
+/* ============================================================
+   DESIGN TOKENS — shared across all modules
+   ============================================================ */
+:root {
+  --bg:          #F2F3F8;
+  --surface:     #FAFBFF;
+  --surface-2:   #ECEEF6;
+  --border:      #D8DCE8;
+  --text-1:      #111827;
+  --text-2:      #6B7280;
+  --text-3:      #656E7E;
+  --accent:      #4F46E5;
+  --accent-light:#EEF2FF;
+  --income:      #047857;
+  --income-bg:   #ECFDF5;
+  --expense:     #DC2626;
+  --expense-bg:  #FEF2F2;
+  --warning:     #D97706;
+  --shadow-sm:   0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
+  --shadow-md:   0 4px 12px rgba(0,0,0,.10);
+  --radius:      12px;
+  --radius-sm:   8px;
+  --font:        -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  --mono:        'SF Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  --footer-h:    60px;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: var(--font);
+  font-size: 15px;
+  color: var(--text-1);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============================================================
+   APP SHELL — outer chrome
+   ============================================================ */
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* Pipeline step indicator */
+.pipeline {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding: 20px 24px 16px;
+  background: var(--surface);
+  border-bottom: 2px solid var(--border);
+  flex-shrink: 0;
+}
+.pipeline-brand {
+  justify-self: start;
+  font-size: 17px; font-weight: 800;
+  color: var(--text-1); letter-spacing: -.04em;
+}
+.pipeline-brand span { color: var(--accent); }
+.pipeline-steps {
+  display: flex;
+  align-items: flex-start;
+  justify-self: center;
+}
+.pipeline-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  min-width: 90px;
+  position: relative;
+}
+.pipeline-step:hover .pipeline-circle { box-shadow: 0 0 0 4px var(--accent-light); }
+.pipeline-circle {
+  width: 38px; height: 38px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  border: 2.5px solid var(--border);
+  color: var(--text-3);
+  font-size: 15px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  transition: all .25s;
+  margin-bottom: 8px;
+  position: relative; z-index: 1;
+}
+.pipeline-step.active .pipeline-circle {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+  box-shadow: 0 0 0 4px rgba(79,70,229,.18);
+}
+.pipeline-step.done .pipeline-circle {
+  background: var(--income); border-color: var(--income); color: #fff;
+}
+.pipeline-line {
+  width: 48px; height: 3px;
+  background: var(--border);
+  margin-top: 19px;
+  flex-shrink: 0;
+  border-radius: 2px;
+  transition: background .3s;
+}
+.pipeline-line.done { background: var(--income); }
+.pipeline-label {
+  font-size: 13px; font-weight: 600;
+  color: var(--text-2); letter-spacing: -.01em;
+}
+.pipeline-step.active .pipeline-label { color: var(--accent); font-weight: 700; }
+.pipeline-step.done .pipeline-label { color: var(--income); }
+.pipeline-sublabel {
+  font-size: 11px; color: var(--text-3); margin-top: 2px;
+  white-space: nowrap;
+}
+.pipeline-settings-wrap {
+  justify-self: end;
+}
+.pipeline-settings-btn {
+  background: none; border: 1px solid var(--border);
+  border-radius: 8px; width: 36px; height: 36px;
+  font-size: 16px; color: var(--text-2);
+  cursor: pointer; display: flex;
+  align-items: center; justify-content: center;
+  transition: all .15s; font-family: var(--font);
+}
+.pipeline-settings-btn:hover {
+  background: var(--surface-2); color: var(--text-1);
+  border-color: var(--accent);
+}
+
+/* Content panes */
+.app-content { flex: 1; overflow: hidden; position: relative; }
+.app-pane {
+  position: absolute; inset: 0;
+  overflow-y: auto;
+  display: none;
+}
+.app-pane.active { display: flex; flex-direction: column; }
+
+/* ============================================================
+   SHARED COMPONENTS
+   ============================================================ */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 10px 18px;
+  border-radius: var(--radius-sm);
+  font-size: 14px; font-weight: 600;
+  cursor: pointer; border: none;
+  transition: all .14s; white-space: nowrap; font-family: var(--font);
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: #4338CA; }
+.btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+.btn-ghost { background: none; color: var(--text-2); border: 1px solid var(--border); }
+.btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text-1); }
+.btn-ghost:disabled { opacity: .45; cursor: not-allowed; }
+.btn-sm { padding: 7px 13px; font-size: 13px; }
+.btn-danger { background: var(--expense); color: #fff; }
+.btn-danger:hover { background: #B91C1C; }
+
+/* Status pills */
+.pill {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 20px;
+  font-size: 13px; font-weight: 600;
+}
+.pill-green  { background: var(--income-bg);  color: var(--income); }
+.pill-red    { background: var(--expense-bg); color: var(--expense); }
+.pill-blue   { background: var(--accent-light); color: var(--accent); }
+.pill-grey   { background: var(--surface-2); color: var(--text-2); }
+
+/* Progress bar */
+.progress-track {
+  height: 6px; background: var(--surface-2);
+  border-radius: 3px; overflow: hidden;
+}
+.progress-fill {
+  height: 100%; background: var(--accent);
+  border-radius: 3px; transition: width .3s ease;
+}
+
+/* ============================================================
+   MODULE 1: UNVAULT
+   ============================================================ */
+.uv-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+}
+.uv-card {
+  width: 100%; max-width: 520px;
+  padding: 36px;
+}
+.uv-logo {
+  font-size: 28px; font-weight: 800;
+  color: var(--text-1); letter-spacing: -.04em;
+  margin-bottom: 4px;
+}
+.uv-logo span { color: var(--accent); }
+.uv-tagline {
+  font-size: 13px; color: var(--text-3);
+  margin-bottom: 28px;
+}
+.uv-drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 32px 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: all .15s;
+  margin-bottom: 16px;
+  position: relative;
+}
+.uv-drop-zone:hover, .uv-drop-zone.drag-over {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+.uv-drop-zone.has-file {
+  border-color: var(--income);
+  background: var(--income-bg);
+}
+.uv-drop-icon { font-size: 32px; margin-bottom: 10px; }
+.uv-drop-text {
+  font-size: 14px; font-weight: 600; color: var(--text-1);
+  margin-bottom: 4px;
+}
+.uv-drop-sub { font-size: 13px; color: var(--text-3); }
+.uv-file-input { display: none; }
+.uv-file-info {
+  display: none;
+  align-items: center; gap: 10px;
+  font-size: 14px; color: var(--income);
+  font-weight: 600;
+}
+.uv-field-row {
+  display: flex; gap: 10px; margin-bottom: 16px;
+}
+.uv-input {
+  flex: 1; padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 14px; font-family: var(--font);
+  color: var(--text-1); background: var(--surface);
+  outline: none; transition: border-color .14s;
+}
+.uv-input:focus { border-color: var(--accent); }
+.uv-input::placeholder { color: var(--text-3); }
+/* Prominent focus ring for the password field — was previously an inline
+   onfocus/onblur box-shadow swap; a plain :focus rule does the same job. */
+.uv-password-input:focus { box-shadow: 0 0 0 5px rgba(79,70,229,.25); }
+
+/* Demo mode */
+.uv-demo-divider {
+  display: flex; align-items: center; gap: 12px;
+  margin: 20px 0 16px; font-size: 13px; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .08em;
+}
+.uv-demo-divider::before, .uv-demo-divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+.uv-demo-btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 13px 20px;
+  border: 2px solid var(--accent); border-radius: 10px;
+  background: var(--accent-light); color: var(--accent);
+  font-size: 14px; font-weight: 600; font-family: var(--font);
+  cursor: pointer; transition: all .15s;
+}
+.uv-demo-btn:hover {
+  background: var(--accent); color: #fff;
+  box-shadow: 0 4px 16px rgba(79,70,229,.3);
+}
+.uv-status {
+  margin-top: 12px; padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px; display: none;
+}
+.uv-status.error { background: var(--expense-bg); color: var(--expense); display: block; }
+.uv-status.info  { background: var(--accent-light); color: var(--accent); display: block; }
+.uv-status.success { background: var(--income-bg); color: var(--income); display: block; }
+.uv-queue {
+  margin-top: 20px; display: none;
+}
+.uv-queue-title {
+  font-size: 13px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--text-3); margin-bottom: 8px;
+}
+.uv-queue-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: 8px;
+  background: var(--surface-2); margin-bottom: 4px;
+  font-size: 13px;
+}
+.uv-queue-name { flex: 1; color: var(--text-1); font-weight: 500; }
+.uv-queue-status { font-size: 13px; }
+
+/* ============================================================
+   MODULE 2: EXTRACTOR
+   ============================================================ */
+.ex-wrap {
+  flex: 1; padding: 24px;
+  max-width: 680px; width: 100%; margin: 0 auto;
+}
+.ex-header {
+  margin-bottom: 20px;
+}
+.ex-title {
+  font-size: 20px; font-weight: 700; color: var(--text-1);
+  letter-spacing: -.03em; margin-bottom: 4px;
+}
+.ex-sub { font-size: 13px; color: var(--text-3); }
+
+.ex-api-row {
+  display: flex; gap: 10px; margin-bottom: 20px;
+  align-items: center;
+}
+.ex-api-label {
+  font-size: 13px; font-weight: 600; color: var(--text-2);
+  white-space: nowrap;
+}
+.ex-api-input {
+  flex: 1; padding: 9px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 13px; font-family: var(--mono);
+  background: var(--surface); color: var(--text-1);
+  outline: none; transition: border-color .14s;
+}
+.ex-api-input:focus { border-color: var(--accent); }
+
+.ex-queue-card {
+  padding: 20px; margin-bottom: 16px;
+}
+.ex-queue-empty {
+  text-align: center; padding: 40px 20px;
+  color: var(--text-3); font-size: 14px;
+}
+.ex-file-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 0; border-bottom: 1px solid var(--border);
+}
+.ex-file-row:last-child { border-bottom: none; }
+.ex-file-icon { font-size: 18px; flex-shrink: 0; }
+.ex-file-name { flex: 1; font-size: 14px; font-weight: 500; color: var(--text-1); }
+.ex-file-pages { font-size: 13px; color: var(--text-3); }
+.ex-file-status { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+.ex-reextract-btn {
+  background: none; border: 1px solid var(--border); border-radius: 6px;
+  width: 24px; height: 24px; font-size: 13px; line-height: 1;
+  color: var(--text-2); cursor: pointer;
+}
+.ex-reextract-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.ex-progress-section {
+  margin-bottom: 20px; display: none;
+}
+.ex-progress-label {
+  display: flex; justify-content: space-between;
+  font-size: 13px; color: var(--text-2); margin-bottom: 8px;
+}
+.ex-log {
+  background: #1a1a2e; color: #a8b4c8;
+  border-radius: var(--radius-sm); padding: 14px;
+  font-family: var(--mono); font-size: 13px;
+  line-height: 1.7; max-height: 180px; overflow-y: auto;
+  margin-top: 10px;
+}
+.ex-log-line { display: block; }
+.ex-log-line.ok { color: #6ee7b7; }
+.ex-log-line.err { color: #fca5a5; }
+.ex-log-line.info { color: #93c5fd; }
+
+.ex-results-card {
+  padding: 20px; display: none;
+}
+.ex-results-title {
+  font-size: 13px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--text-3); margin-bottom: 14px;
+}
+.ex-stat-row {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+  margin-bottom: 16px;
+}
+.ex-stat {
+  text-align: center; padding: 14px;
+  background: var(--surface-2); border-radius: 10px;
+}
+.ex-stat-value {
+  font-size: 22px; font-weight: 700; font-family: var(--mono);
+  color: var(--text-1); margin-bottom: 2px;
+}
+.ex-stat-label { font-size: 13px; color: var(--text-3); }
+
+/* Demo extraction preview */
+.ex-page-preview {
+  display: none; margin-bottom: 16px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--surface); overflow: hidden;
+}
+.ex-page-preview.active { display: block; }
+.ex-page-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px; font-weight: 600; color: var(--text-2);
+}
+.ex-page-body {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  max-height: 420px; overflow: hidden;
+}
+.ex-page-img-wrap {
+  padding: 12px; border-right: 1px solid var(--border);
+  overflow: hidden; display: flex; align-items: flex-start; justify-content: center;
+  background: #f8f8fc;
+}
+.ex-page-img-wrap img {
+  max-width: 100%; max-height: 396px; border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.1);
+}
+.ex-page-txns {
+  padding: 12px; overflow-y: auto; max-height: 396px;
+  font-size: 13px;
+}
+.ex-page-txn-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 5px 8px; border-radius: 6px;
+}
+.ex-page-txn-row:nth-child(even) { background: var(--surface-2); }
+.ex-page-txn-ref { flex: 1; color: var(--text-1); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; margin-right: 12px; }
+.ex-page-txn-amt { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
+.ex-page-txn-amt.credit { color: var(--income); }
+.ex-page-txn-amt.debit { color: var(--expense); }
+.ex-page-txn-cat {
+  font-size: 13px; color: var(--text-3); margin-left: 8px;
+  white-space: nowrap;
+}
+.ex-recon-card {
+  padding: 16px; margin-bottom: 16px; display: none;
+  border: 1px solid var(--income); background: var(--income-bg);
+  border-radius: var(--radius);
+}
+.ex-recon-title {
+  font-size: 13px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .08em; color: var(--income); margin-bottom: 10px;
+}
+.ex-recon-grid {
+  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
+  font-size: 13px;
+}
+.ex-recon-item { text-align: center; }
+.ex-recon-label { color: var(--text-3); margin-bottom: 2px; }
+.ex-recon-val { font-family: var(--mono); font-weight: 600; color: var(--text-1); }
+.ex-recon-match { color: var(--income); font-weight: 700; }
+
+/* ============================================================
+   SETTINGS PANE
+   ============================================================ */
+.set-wrap {
+  flex: 1; padding: 32px 24px;
+  max-width: 540px;
+}
+.set-title {
+  font-size: 18px; font-weight: 700; margin-bottom: 4px;
+  letter-spacing: -.03em;
+}
+.set-sub { font-size: 13px; color: var(--text-3); margin-bottom: 28px; }
+.set-section { margin-bottom: 24px; }
+.set-section-title {
+  font-size: 13px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .09em; color: var(--text-3); margin-bottom: 10px;
+}
+.set-field { margin-bottom: 12px; }
+.set-label {
+  display: block; font-size: 13px; font-weight: 600;
+  color: var(--text-2); margin-bottom: 5px;
+}
+.set-input {
+  width: 100%; padding: 10px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  font-size: 13px; font-family: var(--mono);
+  background: var(--surface); color: var(--text-1);
+  outline: none; transition: border-color .14s;
+}
+.set-input:focus { border-color: var(--accent); }
+.set-hint { font-size: 13px; color: var(--text-3); margin-top: 4px; }
+.set-saved {
+  font-size: 13px; color: var(--income); display: none; margin-left: 8px;
+}
+
+/* ============================================================
+   DASHBOARD MODULE — inherits from dashboard CSS below
+   ============================================================ */
+#pane-dashboard {
+  overflow: hidden;
+}
+/* Dashboard empty state (before data loaded) */
+.db-no-data {
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  height: 100%; gap: 14px; text-align: center; padding: 40px;
+}
+.db-no-data-icon { font-size: 48px; }
+.db-no-data-title { font-size: 18px; font-weight: 700; color: var(--text-1); }
+.db-no-data-body { font-size: 14px; color: var(--text-2); max-width: 320px; line-height: 1.6; }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+</style>
+
+<!-- ═══════════════════════════════════════════════════
+     DASHBOARD MODULE CSS (namespaced .db- .sh-)
+     ═══════════════════════════════════════════════════ -->
+<style id="dashboard-styles">
+/* ============================================================
+   DASHBOARD DESIGN TOKENS — Dark Theme
+   ============================================================ */
+:root {
+  --db-bg:          #0F1117;
+  --db-surface:     #1A1D27;
+  --db-surface-2:   #21253A;
+  --db-surface-3:   #2A2F45;
+  --db-border:      rgba(255,255,255,.08);
+  --db-text-1:      #F0F2FF;
+  --db-text-2:      #8B90A8;
+  --db-text-3:      #7B8599;
+  --db-accent:      #6C63FF;
+  --db-accent-glow: rgba(108,99,255,.25);
+  --db-income:      #00E5A0;
+  --db-income-dim:  rgba(0,229,160,.15);
+  --db-expense:     #FF4D6A;
+  --db-expense-dim: rgba(255,77,106,.15);
+  --db-warning:     #FFB547;
+  --db-radius:      14px;
+  --db-radius-sm:   8px;
+  --db-font:        -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --db-mono:        'SF Mono','Fira Code',Consolas,monospace;
+  --db-tab-h:       50px;
+  --db-footer-h:    58px;
+  --db-shadow:      0 4px 24px rgba(0,0,0,.4);
+
+
+
+/* ── Dashboard pane: dark theme scoping ── */
+#pane-dashboard { background: var(--db-bg); }
+#db-shell { background: var(--db-bg); }
+#db-shell .sh-view { background: var(--db-bg); }
+
+#db-shell {
+/* ---- Tab bar ---- */
+.sh-tabs {
+  display:flex; align-items:stretch;
+  background: var(--db-surface);
+  border-bottom: 1px solid var(--db-border);
+  flex-shrink:0; height:var(--db-tab-h);
+  padding:0 16px; gap:2px;
+}
+.sh-tab {
+  display:flex; align-items:center; gap:7px;
+  padding:0 15px; cursor:pointer;
+  font-size:13px; font-weight:500;
+  color:var(--db-text-2);
+  border-bottom:2px solid transparent;
+  border-top:none; border-left:none; border-right:none;
+  background:none; transition:color .15s,border-color .15s;
+  white-space:nowrap; letter-spacing:-.01em;
+}
+.sh-tab:hover { color:var(--db-text-1); }
+.sh-tab.active { color:var(--db-accent); border-bottom-color:var(--db-accent); }
+.sh-tab-icon { width:15px; height:15px; opacity:.6; flex-shrink:0; }
+.sh-tab.active .sh-tab-icon { opacity:1; }
+
+/* ---- Date range strip ---- */
+.sh-range-toggle {
+  display:flex; align-items:center; justify-content:space-between;
+  background:var(--db-surface); border-bottom:1px solid var(--db-border);
+  padding:0 20px; height:48px; flex-shrink:0;
+}
+/* Date range pill — visible, tappable button */
+.sh-range-pill {
+  display:flex; align-items:center; gap:8px;
+  padding:7px 14px; border-radius:20px;
+  background:var(--db-surface-2);
+  border:1px solid var(--db-border);
+  cursor:pointer; color:var(--db-text-2);
+  font-size:13px; font-family:var(--db-font);
+  transition:all .15s; user-select:none;
+}
+.sh-range-pill:hover {
+  background:var(--db-surface-3);
+  border-color:var(--db-accent);
+  color:var(--db-text-1);
+  box-shadow:0 0 0 3px var(--db-accent-glow);
+}
+.sh-range-label {
+  font-size:13px; color:var(--db-text-2);
+  display:flex; align-items:center; gap:8px;
+  cursor:pointer; user-select:none;
+}
+.sh-range-label span { font-weight:600; color:var(--db-accent); }
+.sh-range-presets { display:flex; gap:5px; }
+.sh-preset {
+  font-size:13px; font-weight:600; padding:3px 10px;
+  border-radius:20px; border:1px solid var(--db-border);
+  cursor:pointer; color:var(--db-text-2); background:none; transition:all .12s;
+}
+.sh-preset:hover, .sh-preset.active {
+  background:var(--db-accent); border-color:var(--db-accent); color:#fff;
+}
+.sh-range-strip {
+  background:var(--db-surface); border-bottom:1px solid var(--db-border);
+  flex-shrink:0; overflow:hidden;
+  transition:height .2s ease,opacity .2s ease; height:0; opacity:0;
+}
+.sh-range-strip.open { height:188px; opacity:1; }
+
+/* Drum picker */
+.sh-drums {
+  display:flex; align-items:center; justify-content:center;
+  gap:20px; padding:0 20px; height:150px; position:relative;
+}
+.sh-drums::before, .sh-drums::after {
+  content:''; position:absolute; left:16px; right:16px; height:1px;
+  background:var(--db-border); pointer-events:none; z-index:10;
+}
+.sh-drums::before { top:calc(50% - 20px); }
+.sh-drums::after  { top:calc(50% + 20px); }
+.sh-drum-group { display:flex; flex-direction:column; align-items:center; }
+.sh-drum-label {
+  font-size:13px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.1em; color:var(--db-text-3); height:16px;
+  display:flex; align-items:center;
+}
+.sh-drum-set { display:flex; gap:2px; }
+.sh-drum-col {
+  position:relative; width:44px; height:200px;
+  /* No CSS scroll-snap here on purpose — the JS in Shell._makeDrumCol owns
+     snapping and committing the selected value as a single pipeline. Having
+     both meant the browser could silently re-snap the column *after* our
+     debounced commit had already fired, so the date that got applied didn't
+     always match what was visibly selected. */
+  overflow-y:scroll;
+  -webkit-overflow-scrolling:touch; scrollbar-width:none;
+  cursor:grab; user-select:none;
+}
+.sh-drum-col::-webkit-scrollbar { display:none; }
+.sh-drum-col::before, .sh-drum-col::after {
+  content:''; position:absolute; left:0; right:0; height:80px; z-index:2; pointer-events:none;
+}
+.sh-drum-col::before { top:0; background:linear-gradient(to bottom,rgba(26,29,39,.96) 0%,transparent 100%); }
+.sh-drum-col::after  { bottom:0; background:linear-gradient(to top,rgba(26,29,39,.96) 0%,transparent 100%); }
+.sh-drum-item {
+  height:40px; display:flex; align-items:center; justify-content:center;
+  font-size:15px; font-weight:400; color:var(--db-text-3);
+  flex-shrink:0; transition:color .12s,font-size .12s;
+  cursor:pointer;
+}
+.sh-drum-item.selected { color:var(--db-accent); font-weight:700; font-size:16px; }
+/* Days that don't exist in the selected month (31 Feb, 31 Apr…). Visibly
+   dead and not clickable, rather than silently accepted. */
+.sh-drum-item.invalid { opacity:.22; pointer-events:none; text-decoration:line-through; }
+
+/* Draft vs applied: nothing commits until Apply is pressed. */
+.sh-range-draft {
+  font-weight:600; letter-spacing:0; text-transform:none; font-size:13px;
+  font-family:var(--db-mono); color:var(--db-accent);
+}
+.sh-range-actions {
+  display:flex; align-items:center; justify-content:flex-end; gap:8px;
+  padding:4px 20px 14px;
+}
+.sh-range-hint {
+  margin-right:auto; font-size:13px; color:var(--db-text-3);
+}
+.sh-range-hint.dirty { color:var(--db-warning); }
+.sh-drum-spacer { height:80px; flex-shrink:0; }
+.sh-drum-sep { font-size:20px; color:var(--db-text-3); font-weight:200; line-height:1; margin-top:18px; align-self:flex-start; }
+
+/* ---- Content + views ---- */
+.sh-content { flex:1; overflow:hidden; position:relative; }
+.sh-view {
+  position:absolute; inset:0; overflow-y:auto; display:none;
+  padding:16px; padding-bottom:calc(var(--db-footer-h) + 16px);
+  background:var(--db-bg);
+}
+.sh-view.active { display:block; }
+.sh-view::-webkit-scrollbar { width:4px; }
+.sh-view::-webkit-scrollbar-thumb { background:var(--db-surface-3); border-radius:2px; }
+
+/* ---- Footer ---- */
+.sh-footer {
+  display:flex; align-items:center; justify-content:space-between;
+  background:var(--db-surface); border-top:1px solid var(--db-border);
+  padding:0 16px; height:var(--db-footer-h); flex-shrink:0; gap:12px;
+}
+.sh-footer-info { font-size:13px; color:var(--db-text-3); line-height:1.4; }
+.sh-footer-info strong { color:var(--db-text-2); }
+.sh-footer-actions { display:flex; gap:8px; flex-shrink:0; }
+
+
+}
+/* ============================================================
+   SHARED DASHBOARD COMPONENTS
+   ============================================================ */
+.btn {
+  display:inline-flex; align-items:center; gap:6px;
+  padding:9px 16px; border-radius:var(--db-radius-sm);
+  font-size:13px; font-weight:600; cursor:pointer; border:none;
+  transition:all .14s; white-space:nowrap; font-family:var(--db-font);
+}
+.btn-primary { background:var(--db-accent); color:#fff; }
+.btn-primary:hover { background:#7B73FF; box-shadow:0 0 20px var(--db-accent-glow); }
+.btn-ghost { background:none; color:var(--db-text-2); border:1px solid var(--db-border); }
+.btn-ghost:hover { background:var(--db-surface-2); color:var(--db-text-1); }
+.btn-sm { padding:6px 12px; font-size:13px; }
+
+.db-card {
+  background:var(--db-surface);
+  border-radius:var(--db-radius);
+  border:1px solid var(--db-border);
+  box-shadow:var(--db-shadow);
+}
+.db-section-title {
+  font-size:13px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.1em; color:var(--db-text-3); margin-bottom:14px;
+}
+.db-figure { font-family:var(--db-mono); font-variant-numeric:tabular-nums; }
+
+/* ============================================================
+   OVERVIEW TAB
+   ============================================================ */
+/* KPI strip */
+.db-kpi-strip {
+  display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:14px;
+}
+.db-kpi-card {
+  padding:18px 20px; cursor:pointer;
+  transition:transform .12s, box-shadow .12s;
+  position:relative; overflow:hidden;
+}
+.db-kpi-card::before {
+  content:''; position:absolute; top:0; left:0; right:0; height:2px;
+}
+.db-kpi-card.income::before  { background:var(--db-income); }
+.db-kpi-card.expense::before { background:var(--db-expense); }
+.db-kpi-card.net::before     { background:var(--db-accent); }
+.db-kpi-card.neutral::before { background:var(--db-warning); }
+.db-kpi-card:hover { transform:translateY(-2px); box-shadow:0 8px 32px rgba(0,0,0,.5); }
+.db-kpi-eyebrow {
+  font-size:13px; font-weight:700; letter-spacing:.09em;
+  text-transform:uppercase; color:var(--db-text-3); margin-bottom:10px;
+}
+.db-kpi-value {
+  font-size:24px; font-weight:700; font-family:var(--db-mono);
+  letter-spacing:-.03em; line-height:1; margin-bottom:4px;
+}
+.db-kpi-value.income  { color:var(--db-income); }
+.db-kpi-value.expense { color:var(--db-expense); }
+.db-kpi-value.accent  { color:var(--db-accent); }
+.db-kpi-value.warning { color:var(--db-warning); }
+.db-kpi-sub { font-size:13px; color:var(--db-text-3); }
+
+.db-note {
+  font-size:13px; color:var(--db-text-3); line-height:1.6;
+  background:rgba(108,99,255,.07); border-left:2px solid var(--db-accent);
+  padding:10px 14px; border-radius:0 6px 6px 0; margin-bottom:14px;
+}
+
+/* Hero net position */
+.db-hero {
+  padding:28px 28px 24px;
+  margin-bottom:14px;
+  background:linear-gradient(135deg, var(--db-surface) 0%, var(--db-surface-2) 100%);
+  position:relative; overflow:hidden;
+}
+.db-hero::after {
+  content:''; position:absolute; top:-80px; right:-80px;
+  width:240px; height:240px; border-radius:50%;
+  background:radial-gradient(circle, var(--db-accent-glow) 0%, transparent 70%);
+  pointer-events:none;
+}
+.db-hero-eyebrow {
+  font-size:13px; font-weight:700; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--db-text-3); margin-bottom:10px;
+}
+.db-hero-value {
+  font-size:48px; font-weight:800; font-family:var(--db-mono);
+  letter-spacing:-.04em; line-height:1; margin-bottom:6px;
+}
+.db-hero-value.positive { color:var(--db-income); }
+.db-hero-value.negative { color:var(--db-expense); }
+.db-hero-sub { font-size:13px; color:var(--db-text-2); }
+
+/* Overview charts row */
+.db-overview-charts {
+  display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:14px;
+}
+
+/* Donut chart */
+.db-donut-wrap { padding:20px; }
+.db-donut-slice { opacity:.9; cursor:pointer; transition:opacity .12s; }
+.db-donut-slice:hover { opacity:1; }
+.db-donut-svg-wrap {
+  display:flex; align-items:center; gap:20px;
+}
+.db-donut-legend {
+  flex:1; display:flex; flex-direction:column; gap:6px; min-width:0;
+}
+.db-donut-legend-item {
+  display:flex; align-items:center; gap:8px;
+  font-size:13px; cursor:pointer; padding:3px 0;
+  transition:opacity .12s;
+}
+.db-donut-legend-item:hover { opacity:.8; }
+.db-donut-legend-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.db-donut-legend-name { flex:1; color:var(--db-text-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.db-donut-legend-val { font-family:var(--db-mono); font-size:13px; color:var(--db-text-1); flex-shrink:0; }
+
+/* Mini monthly bars in overview */
+.db-mini-chart-wrap { padding:20px; }
+.db-mini-bars { display:flex; align-items:flex-end; gap:3px; height:100px; }
+.db-mini-bar-group { display:flex; gap:1px; align-items:flex-end; flex:1; }
+.db-mini-bar {
+  flex:1; border-radius:2px 2px 0 0;
+  transition:opacity .14s;
+  cursor:pointer; min-width:3px;
+}
+.db-mini-bar:hover { opacity:.7; }
+.db-mini-label { font-size:13px; color:var(--db-text-3); text-align:center; margin-top:4px; }
+.db-mini-x-labels { display:flex; gap:3px; margin-top:2px; }
+
+/* Insight strip */
+.db-insight {
+  padding:13px 18px; margin-bottom:14px;
+  background:var(--db-accent-glow);
+  border:1px solid rgba(108,99,255,.3);
+  border-radius:var(--db-radius);
+  font-size:13px; color:var(--db-text-1);
+  line-height:1.5; display:flex; align-items:flex-start; gap:10px;
+}
+
+/* Top categories list */
+.db-top-cats { padding:18px; }
+.db-top-cat-row {
+  display:flex; align-items:center; gap:12px;
+  padding:9px 10px; margin:0 -10px;
+  border-radius:8px; cursor:pointer; transition:background .1s;
+}
+.db-top-cat-row:hover { background:var(--db-surface-2); }
+.db-cat-dot { width:8px; height:8px; border-radius:50%; flex-shrink:0; }
+.db-cat-name { flex:1; font-size:13px; font-weight:500; color:var(--db-text-1); }
+.db-cat-bar-wrap { width:90px; height:3px; background:var(--db-surface-3); border-radius:2px; overflow:hidden; }
+.db-cat-bar-fill { height:100%; border-radius:2px; }
+.db-cat-amount { font-family:var(--db-mono); font-size:13px; font-weight:600; min-width:90px; text-align:right; color:var(--db-text-1); }
+
+/* Sources */
+.db-files-row {
+  display:flex; align-items:center; gap:10px; padding:8px 0;
+  font-size:13px; border-bottom:1px solid var(--db-border);
+}
+.db-files-row:last-child { border-bottom:none; }
+.db-file-name { flex:1; color:var(--db-text-1); font-weight:500; }
+.db-file-meta { font-size:13px; color:var(--db-text-3); }
+
+/* ============================================================
+   SPENDING + INCOME TABS (shared)
+   ============================================================ */
+.db-flow-summary {
+  display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; margin-bottom:14px;
+}
+.db-flow-stat { padding:16px 18px; }
+.db-flow-stat-label {
+  font-size:13px; font-weight:700; text-transform:uppercase;
+  letter-spacing:.08em; color:var(--db-text-3); margin-bottom:8px;
+}
+.db-flow-stat-value { font-size:20px; font-weight:700; font-family:var(--db-mono); }
+
+.db-cat-chart { padding:20px; }
+.db-chart-row { margin-bottom:4px; }
+.db-chart-row-header {
+  display:flex; align-items:center; gap:10px;
+  cursor:pointer; padding:9px 10px; margin:0 -10px;
+  border-radius:8px; transition:background .1s;
+}
+.db-chart-row-header:hover { background:var(--db-surface-2); }
+.db-chart-row-name {
+  flex:0 0 150px; font-size:13px; font-weight:500; color:var(--db-text-1);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.db-chart-bar-track { flex:1; height:6px; background:var(--db-surface-3); border-radius:3px; overflow:hidden; }
+.db-chart-bar-fill { height:100%; border-radius:3px; transition:width .4s cubic-bezier(.4,0,.2,1); }
+.db-chart-row-amount { font-family:var(--db-mono); font-size:13px; font-weight:600; min-width:90px; text-align:right; color:var(--db-text-1); }
+.db-chart-row-pct { font-size:13px; color:var(--db-text-3); min-width:34px; text-align:right; }
+.db-chart-expand-icon { font-size:13px; color:var(--db-text-3); transition:transform .2s; flex-shrink:0; }
+.db-chart-row.expanded .db-chart-expand-icon { transform:rotate(90deg); }
+
+/* Transaction drill-down */
+.db-txn-list { display:none; border-top:1px solid var(--db-border); margin-top:4px; padding:8px 0 4px 160px; }
+.db-chart-row.expanded .db-txn-list { display:block; }
+.db-txn-row {
+  display:flex; align-items:center; gap:12px;
+  padding:6px 10px; border-radius:6px; font-size:13px; transition:background .1s;
+}
+.db-txn-row:hover { background:var(--db-surface-2); }
+.db-txn-date { color:var(--db-text-3); min-width:76px; font-family:var(--db-mono); font-size:13px; }
+.db-txn-ref { flex:1; color:var(--db-text-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.db-txn-amount { font-family:var(--db-mono); font-weight:600; min-width:84px; text-align:right; }
+.db-txn-amount.neg { color:var(--db-expense); }
+.db-txn-amount.pos { color:var(--db-income); }
+
+/* ============================================================
+   MONTHLY TAB
+   ============================================================ */
+.db-monthly-chart-wrap { padding:20px; }
+.db-monthly-legend { display:flex; gap:18px; margin-bottom:16px; }
+.db-legend-item { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--db-text-2); }
+.db-legend-dot { width:10px; height:4px; border-radius:2px; flex-shrink:0; }
+.db-monthly-svg-wrap { width:100%; overflow-x:auto; }
+.db-monthly-tooltip {
+  position:fixed; background:var(--db-surface-2);
+  border:1px solid var(--db-border);
+  color:var(--db-text-1); padding:10px 14px;
+  border-radius:10px; font-size:13px; font-family:var(--db-mono);
+  pointer-events:none; z-index:1000; display:none;
+  white-space:nowrap; box-shadow:var(--db-shadow); line-height:1.8;
+}
+.db-month-detail {
+  display:none; margin-top:14px; padding:16px;
+  background:var(--db-surface-2); border-radius:var(--db-radius);
+  border:1px solid var(--db-border);
+}
+.db-month-detail.open { display:block; }
+.db-month-detail-title {
+  font-size:13px; font-weight:700; color:var(--db-text-1);
+  margin-bottom:12px; display:flex; align-items:center; justify-content:space-between;
+}
+.db-month-close {
+  background:none; border:none; cursor:pointer;
+  font-size:18px; color:var(--db-text-3); line-height:1;
+}
+.db-month-cats { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px; }
+.db-month-cat-chip {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:9px 12px; background:var(--db-surface); border-radius:8px;
+  font-size:13px; border:1px solid var(--db-border);
+}
+.db-month-cat-name { color:var(--db-text-2); font-size:13px; }
+.db-month-cat-val { font-family:var(--db-mono); font-weight:600; font-size:13px; }
+
+/* ============================================================
+   LEDGER TAB
+   ============================================================ */
+.db-ledger-toolbar {
+  display:flex; gap:8px; margin-bottom:12px;
+  flex-wrap:wrap; align-items:center;
+}
+.db-search-wrap { flex:1; min-width:200px; position:relative; }
+.db-search-wrap svg { position:absolute; left:11px; top:50%; transform:translateY(-50%); color:var(--db-text-3); }
+.db-search {
+  width:100%; padding:9px 12px 9px 34px;
+  border:1px solid var(--db-border); border-radius:var(--db-radius-sm);
+  font-size:13px; font-family:var(--db-font);
+  background:var(--db-surface); color:var(--db-text-1); outline:none;
+  transition:border-color .14s;
+}
+.db-search:focus { border-color:var(--db-accent); }
+.db-search::placeholder { color:var(--db-text-3); }
+.db-filter-select {
+  padding:9px 12px; border:1px solid var(--db-border);
+  border-radius:var(--db-radius-sm); font-size:13px;
+  font-family:var(--db-font); background:var(--db-surface);
+  color:var(--db-text-1); outline:none; cursor:pointer;
+}
+.db-filter-select:focus { border-color:var(--db-accent); }
+.db-ledger-wrap {
+  background:var(--db-surface); border:1px solid var(--db-border);
+  border-radius:var(--db-radius); box-shadow:var(--db-shadow);
+  /* No overflow:hidden — it makes this a scroll container, which silently
+     breaks `position:sticky` on the header against the real scroller
+     (.sh-view). Barely noticeable at 50 rows a page; very noticeable now the
+     ledger renders every transaction in one scroll. Corners are rounded on
+     the header/footer cells instead. */
+}
+.db-ledger-table { width:100%; border-collapse:collapse; font-size:13px; }
+.db-ledger-table th {
+  background:var(--db-surface-2); padding:11px 14px;
+  text-align:left; font-size:13px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.08em;
+  color:var(--db-text-3); border-bottom:1px solid var(--db-border);
+  cursor:pointer; user-select:none; white-space:nowrap;
+  position:sticky; top:0; z-index:3;
+}
+.db-ledger-table th:first-child { border-top-left-radius:var(--db-radius); }
+.db-ledger-table th:last-child  { border-top-right-radius:var(--db-radius); }
+.db-ledger-footer:last-child {
+  border-bottom-left-radius:var(--db-radius); border-bottom-right-radius:var(--db-radius);
+}
+.db-ledger-table th:hover { color:var(--db-text-1); }
+.db-sort-arrow { margin-left:4px; opacity:.4; }
+.db-sort-arrow.active { opacity:1; color:var(--db-accent); }
+.db-ledger-table td {
+  padding:9px 14px; border-bottom:1px solid var(--db-border); vertical-align:middle;
+}
+.db-ledger-table tr:last-child td { border-bottom:none; }
+.db-ledger-table tr:hover td { background:var(--db-surface-2); }
+.db-ledger-td-date { font-family:var(--db-mono); font-size:13px; color:var(--db-text-2); white-space:nowrap; }
+.db-ledger-td-ref { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--db-text-1); }
+.db-ledger-td-amount { font-family:var(--db-mono); font-weight:600; text-align:right; white-space:nowrap; }
+.db-ledger-td-amount.neg { color:var(--db-expense); }
+.db-ledger-td-amount.pos { color:var(--db-income); }
+.db-ledger-td-bal { font-family:var(--db-mono); font-size:13px; color:var(--db-text-3); text-align:right; }
+.db-badge {
+  display:inline-flex; align-items:center; padding:3px 8px;
+  border-radius:20px; font-size:13px; font-weight:600;
+  background:var(--db-surface-2); color:var(--db-text-2);
+  cursor:pointer; white-space:nowrap; transition:all .1s;
+}
+.db-badge:not(.locked):hover { background:var(--db-accent-glow); color:var(--db-accent); }
+.db-badge.active-filter { background:var(--db-accent); color:#fff; }
+.db-badge.locked { cursor:default; opacity:.6; }
+.db-ledger-footer {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 14px; border-top:1px solid var(--db-border);
+  font-size:13px; color:var(--db-text-3);
+  background:var(--db-surface-2);
+}
+.db-empty {
+  display:flex; flex-direction:column; align-items:center;
+  justify-content:center; padding:60px 24px; text-align:center; gap:12px;
+}
+.db-empty-icon { font-size:40px; }
+.db-empty-title { font-size:16px; font-weight:600; color:var(--db-text-1); }
+.db-empty-body { font-size:13px; color:var(--db-text-2); max-width:320px; line-height:1.5; }
+
+/* No-data overlay */
+.db-no-data {
+  display:flex; flex-direction:column; align-items:center;
+  justify-content:center; height:100%; gap:14px;
+  text-align:center; padding:40px; background:var(--db-bg);
+}
+.db-no-data-icon { font-size:48px; }
+.db-no-data-title { font-size:18px; font-weight:700; color:var(--db-text-1); }
+.db-no-data-body { font-size:14px; color:var(--db-text-2); max-width:320px; line-height:1.6; }
+
+@media (max-width:700px) {
+  .db-kpi-strip { grid-template-columns:1fr 1fr; }
+  .db-overview-charts { grid-template-columns:1fr; }
+  .db-flow-summary { grid-template-columns:1fr 1fr; }
+  .db-chart-row-name { flex:0 0 100px; font-size:13px; }
+  .db-txn-list { padding-left:0; }
+  .db-hero-value { font-size:36px; }
+}
+</style>
+
+
+<style id="tl-rv-styles">
+.tl-title { font-size:20px; font-weight:700; letter-spacing:-.03em; margin-bottom:3px; color:var(--text-1); }
+.tl-sub { font-size:13px; color:var(--text-3); }
+
+/* ============================================================
+   REVIEW MODULE (.rv-)
+   ============================================================ */
+.rv-wrap {
+  /* Deliberately NOT a nested flex/overflow container. The scrolling is done
+     by .app-pane (which is position:absolute; inset:0; overflow-y:auto) —
+     the same single-scroll-container pattern the Dashboard's .sh-view uses.
+     Nesting a second scroll area here previously made the table unscrollable. */
+  padding:16px;
+}
+.rv-toolbar {
+  display:flex; justify-content:space-between; align-items:flex-start;
+  gap:16px; margin-bottom:14px; flex-wrap:wrap;
+}
+.rv-table-wrap {
+  overflow:hidden;               /* clips the table to the rounded corners only */
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow-sm);
+}
+.rv-table { width:100%; border-collapse:collapse; font-size:13px; }
+.rv-table th {
+  background:var(--surface-2); padding:10px 12px;
+  text-align:left; font-size:13px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.07em;
+  color:var(--text-3); border-bottom:1px solid var(--border);
+  position:sticky; top:0; z-index:1;
+  cursor:pointer; user-select:none;
+}
+.rv-table th:hover { color:var(--text-1); }
+.rv-sort-arrow { margin-left:4px; opacity:.4; }
+.rv-sort-arrow.active { opacity:1; color:var(--accent); }
+.rv-table td {
+  padding:8px 12px; border-bottom:1px solid var(--border); vertical-align:middle;
+}
+.rv-table tr:last-child td { border-bottom:none; }
+.rv-table tr:hover td { background:var(--bg); }
+.rv-table tr.rv-row-selectable { cursor:pointer; }
+.rv-table tr.rv-row-selected td { background:rgba(79,70,229,.14); }
+.rv-table tr.rv-row-selected:hover td { background:rgba(79,70,229,.20); }
+.rv-table tr.rv-row-selected td:first-child { box-shadow:inset 3px 0 0 var(--accent); }
+.rv-bulk-bar {
+  display:flex; align-items:center; gap:12px;
+  padding:10px 14px; margin-bottom:10px;
+  background:var(--accent-light); border:1px solid var(--accent);
+  border-radius:var(--radius-sm); font-size:13px; color:var(--text-1);
+}
+.rv-bulk-bar strong { color:var(--accent); }
+.rv-bulk-bar-spacer { flex:1; }
+.rv-td-date { font-family:var(--mono); font-size:13px; color:var(--text-2); white-space:nowrap; }
+.rv-td-ref { max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--text-1); }
+.rv-td-source { font-size:13px; color:var(--text-3); white-space:nowrap; }
+.rv-td-amount { font-family:var(--mono); font-weight:600; text-align:right; white-space:nowrap; }
+.rv-td-amount.neg { color:var(--expense); }
+.rv-td-amount.pos { color:var(--income); }
+.rv-cat-badge {
+  display:inline-flex; align-items:center; gap:5px;
+  padding:3px 8px; border-radius:20px;
+  font-size:13px; font-weight:600;
+  background:var(--surface-2); color:var(--text-2);
+  cursor:pointer; white-space:nowrap;
+  border:1px solid transparent;
+  transition:all .12s; position:relative;
+}
+.rv-cat-badge:not(.locked):hover {
+  background:var(--accent-light); color:var(--accent); border-color:var(--accent);
+}
+.rv-cat-badge.locked { cursor:default; opacity:.65; }
+.rv-cat-badge.locked::after { content:'🔒'; font-size:9px; margin-left:3px; }
+.rv-cat-picker {
+  position:fixed; z-index:200;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:var(--radius-sm); box-shadow:var(--shadow-md);
+  min-width:200px; max-height:300px; overflow-y:auto; padding:6px 0;
+}
+.rv-cat-picker-search {
+  width:100%; padding:7px 10px;
+  border:none; border-bottom:1px solid var(--border);
+  font-size:13px; font-family:var(--font); outline:none;
+  background:var(--surface-2); color:var(--text-1);
+}
+.rv-cat-option {
+  padding:7px 12px; font-size:13px; cursor:pointer;
+  display:flex; align-items:center; gap:8px; color:var(--text-1);
+}
+.rv-cat-option:hover { background:var(--accent-light); color:var(--accent); }
+.rv-cat-option.selected { background:var(--accent-light); color:var(--accent); }
+.rv-cat-option.add-new { color:var(--accent); font-weight:600; }
+.rv-cat-picker.cp-dark {
+  background:var(--db-surface); border-color:var(--db-border); box-shadow:var(--db-shadow);
+}
+.rv-cat-picker.cp-dark .rv-cat-picker-search {
+  background:var(--db-surface-2); color:var(--db-text-1); border-bottom-color:var(--db-border);
+}
+.rv-cat-picker.cp-dark .rv-cat-option { color:var(--db-text-1); }
+.rv-cat-picker.cp-dark .rv-cat-option:hover,
+.rv-cat-picker.cp-dark .rv-cat-option.selected { background:var(--db-accent-glow); color:var(--db-accent); }
+.rv-cat-picker.cp-dark .rv-cat-option.add-new { color:var(--db-accent); }
+.rv-footer {
+  padding:10px 14px; border-top:1px solid var(--border);
+  font-size:13px; color:var(--text-3);
+  background:var(--surface-2);
+  display:flex; justify-content:space-between; align-items:center;
+}
+</style>
+</head>
+
+<body>
+<div class="app-shell" id="app">
+
+  <!-- ═══ PIPELINE STEP INDICATOR ═══ -->
+  <div class="pipeline" id="pipeline">
+    <div class="pipeline-brand">Tax<span>Flow</span></div>
+    <div class="pipeline-steps" id="pipeline-steps">
+      <div class="pipeline-step active" data-step="unlock">
+        <div class="pipeline-circle">1</div>
+        <div class="pipeline-label">Unlock</div>
+        <div class="pipeline-sublabel">Decrypt PDFs</div>
+      </div>
+      <div class="pipeline-line" data-after="unlock"></div>
+      <div class="pipeline-step" data-step="extract">
+        <div class="pipeline-circle">2</div>
+        <div class="pipeline-label">Extract</div>
+        <div class="pipeline-sublabel">Vision AI reads pages</div>
+      </div>
+      <div class="pipeline-line" data-after="extract"></div>
+      <div class="pipeline-step" data-step="reconcile">
+        <div class="pipeline-circle">3</div>
+        <div class="pipeline-label">Reconcile</div>
+        <div class="pipeline-sublabel">Verify against totals</div>
+      </div>
+      <div class="pipeline-line" data-after="reconcile"></div>
+      <div class="pipeline-step" data-step="dashboard">
+        <div class="pipeline-circle">4</div>
+        <div class="pipeline-label">Dashboard</div>
+        <div class="pipeline-sublabel">Analyse &amp; explore</div>
+      </div>
+    </div>
+    <div class="pipeline-settings-wrap">
+      <button class="pipeline-settings-btn" id="pipeline-settings-btn" title="Settings">
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="currentColor">
+          <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- ═══ PANES ═══ -->
+  <div class="app-content">
+
+    <!-- ─── PANE 1: UNVAULT ─── -->
+    <div class="app-pane active" id="pane-unvault">
+      <div class="uv-wrap">
+        <div class="card uv-card">
+          <div class="uv-logo">Tax<span>Flow</span></div>
+          <div class="uv-tagline">Drop your bank statement PDFs — locked or unlocked. Add as many as you like at once.</div>
+
+          <!-- Multi-file drop zone -->
+          <div class="uv-drop-zone" id="uv-drop">
+            <div class="uv-drop-icon">🔒</div>
+            <div class="uv-drop-text">Drop PDFs here or click to browse</div>
+            <div class="uv-drop-sub">Multiple files accepted · Password-protected or unlocked</div>
+          </div>
+          <input type="file" id="uv-file-input" class="uv-file-input" accept=".pdf" multiple>
+
+          <!-- Pending file list (before unlock) -->
+          <div id="uv-pending" style="display:none;margin-bottom:12px">
+            <div class="uv-queue-title" style="margin-bottom:6px">Files staged</div>
+            <div id="uv-pending-list"></div>
+          </div>
+
+          <!-- Password + unlock -->
+          <!-- Password — prominent, coloured border when focused -->
+          <div style="margin-bottom:14px">
+            <label style="display:block;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text-2);margin-bottom:8px">
+              🔑 PDF Password
+            </label>
+            <div style="display:flex;gap:10px;align-items:stretch">
+              <input type="password" class="uv-input uv-password-input" id="uv-password"
+                     placeholder="Enter password here — shared across all files, or leave blank if unlocked"
+                     style="flex:1;font-size:15px;padding:13px 16px;border:2px solid var(--accent);border-radius:10px;box-shadow:0 0 0 4px var(--accent-light);background:var(--surface);color:var(--text-1);outline:none;transition:box-shadow .15s">
+              <button class="btn btn-primary" id="uv-btn" disabled
+                      style="font-size:15px;padding:13px 24px;border-radius:10px;white-space:nowrap">
+                🔓 Unlock all →
+              </button>
+            </div>
+          </div>
+
+          <div id="uv-status" class="uv-status"></div>
+
+          <!-- Demo mode -->
+          <div class="uv-demo-divider">or try a live demo</div>
+          <button class="uv-demo-btn" id="uv-demo-btn">
+            Try with sample statement
+          </button>
+
+          <!-- Processed queue -->
+          <div class="uv-queue" id="uv-queue" style="display:none">
+            <div class="uv-queue-title">Unlocked &amp; ready</div>
+            <div id="uv-queue-list"></div>
+            <div style="margin-top:20px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+              <button class="btn btn-ghost btn-sm" id="uv-add-more-btn">+ Add more PDFs</button>
+              <button class="btn btn-primary" id="uv-continue-btn"
+                      data-goto="extract"
+                      style="font-size:15px;padding:13px 28px;border-radius:10px;box-shadow:0 4px 16px rgba(79,70,229,.35)">
+                ▶ Continue to Extract →
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- ─── PANE 3: REVIEW ─── -->
+    <div class="app-pane" id="pane-review">
+      <div class="rv-wrap">
+        <div class="rv-toolbar">
+          <div>
+            <div class="tl-title">Review &amp; Categorise</div>
+            <div class="tl-sub" id="rv-sub">All extracted transactions before committing to Dashboard.</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+            <select class="db-filter-select" id="rv-source-filter">
+              <option value="">All sources</option>
+            </select>
+            <button class="btn btn-ghost" id="rv-remove-source-btn" style="color:var(--expense)" title="Delete every non-locked row from the source selected on the left — for a statement uploaded twice by mistake. Does not touch other sources or re-run extraction.">🗑 Remove Source</button>
+            <select class="db-filter-select" id="rv-cat-filter">
+              <option value="">All categories</option>
+            </select>
+            <button class="btn btn-ghost" id="rv-export-btn" title="Export every row with a suggested-category column, for bulk editing in Excel or by an AI">⇩ Categorise in Excel</button>
+            <button class="btn btn-ghost" id="rv-import-btn" title="Re-import a categorised CSV — matches rows by id, skips locked trading entries">⇧ Import categorised</button>
+            <input type="file" id="rv-import-input" accept=".csv,.xlsx" style="display:none">
+            <button class="btn btn-primary" id="rv-commit-btn">
+              ✓ Commit to Dashboard
+            </button>
+          </div>
+        </div>
+        <div id="rv-empty" class="db-empty" style="display:none">
+          <div class="db-empty-icon">📋</div>
+          <div class="db-empty-title">Nothing to review yet</div>
+          <div class="db-empty-body">Extract bank statements first — go to the Unvault tab.</div>
+        </div>
+        <div id="rv-table-wrap"></div>
+      </div>
+    </div>
+
+    <!-- ─── PANE 2: EXTRACTOR ─── -->
+    <div class="app-pane" id="pane-extract">
+      <div class="ex-wrap">
+        <div class="ex-header">
+          <div class="ex-title">Extract Transactions</div>
+          <div class="ex-sub">Claude Vision reads each page and returns structured transaction data.</div>
+        </div>
+
+        <input type="hidden" id="ex-api-key" value="">
+
+        <!-- File queue -->
+        <div class="card ex-queue-card" id="ex-queue-card">
+          <div class="db-section-title">Files ready</div>
+          <div id="ex-file-list">
+            <div class="ex-queue-empty">No files unlocked yet. Go to Unvault first.</div>
+          </div>
+        </div>
+
+        <!-- Action row -->
+        <div style="display:flex;gap:10px;margin-bottom:16px">
+          <button class="btn btn-primary" id="ex-run-btn" disabled>
+            ▶ Run Extraction
+          </button>
+          <button class="btn btn-ghost btn-sm" data-goto="unvault">← Back</button>
+        </div>
+
+        <!-- Progress -->
+        <div class="ex-progress-section" id="ex-progress-section">
+          <div class="ex-progress-label">
+            <span id="ex-progress-label">Processing…</span>
+            <span id="ex-progress-pct">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="ex-progress-fill" style="width:0%"></div>
+          </div>
+          <div class="ex-log" id="ex-log"></div>
+        </div>
+
+        <!-- Demo page preview -->
+        <div class="ex-page-preview" id="ex-page-preview">
+          <div class="ex-page-header">
+            <span id="ex-page-title">Page 1 of 2</span>
+            <span id="ex-page-count">0 transactions</span>
+          </div>
+          <div class="ex-page-body">
+            <div class="ex-page-img-wrap">
+              <img id="ex-page-img" alt="Rendered PDF page">
+            </div>
+            <div class="ex-page-txns" id="ex-page-txns"></div>
+          </div>
+        </div>
+
+        <!-- Reconciliation -->
+        <div class="ex-recon-card" id="ex-recon-card">
+          <div class="ex-recon-title">Reconciliation</div>
+          <div class="ex-recon-grid" id="ex-recon-grid"></div>
+        </div>
+
+        <!-- Results -->
+        <div class="card ex-results-card" id="ex-results-card">
+          <div class="ex-results-title">Extraction complete</div>
+          <div class="ex-stat-row">
+            <div class="ex-stat">
+              <div class="ex-stat-value" id="ex-stat-txns">0</div>
+              <div class="ex-stat-label">Transactions</div>
+            </div>
+            <div class="ex-stat">
+              <div class="ex-stat-value" id="ex-stat-files">0</div>
+              <div class="ex-stat-label">Files</div>
+            </div>
+            <div class="ex-stat">
+              <div class="ex-stat-value" id="ex-stat-months">0</div>
+              <div class="ex-stat-label">Months</div>
+            </div>
+          </div>
+          <button class="btn btn-primary" id="ex-view-dashboard-btn">
+            Continue to Reconcile →
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── PANE 3: DASHBOARD ─── -->
+    <div class="app-pane" id="pane-dashboard">
+      <div id="db-no-data" class="db-no-data">
+        <div class="db-no-data-icon">📊</div>
+        <div class="db-no-data-title">No data committed yet</div>
+        <div class="db-no-data-body">Complete the Review step and commit your transactions to see the dashboard.</div>
+        <button class="btn btn-primary btn-sm" data-goto="unvault">Start with Unvault →</button>
+      </div>
+      <div id="db-shell" style="display:none;flex-direction:column;height:100%;background:var(--db-bg)">
+
+        <!-- Dashboard inner tab bar -->
+        <nav class="sh-tabs">
+          <button class="sh-tab active" data-tab="overview">
+            <svg class="sh-tab-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M2 10a8 8 0 1116 0A8 8 0 012 10zm8-4a.75.75 0 01.75.75v3.5h2a.75.75 0 010 1.5H10a.75.75 0 01-.75-.75V6.75A.75.75 0 0110 6z"/></svg>
+            Overview
+          </button>
+          <button class="sh-tab" data-tab="spending">
+            <svg class="sh-tab-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 3a1 1 0 000 2h11a1 1 0 100-2H3zm0 4a1 1 0 000 2h7a1 1 0 100-2H3zm0 4a1 1 0 100 2h4a1 1 0 100-2H3z"/></svg>
+            Spending
+          </button>
+          <button class="sh-tab" data-tab="income">
+            <svg class="sh-tab-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z"/></svg>
+            Income
+          </button>
+          <button class="sh-tab" data-tab="monthly">
+            <svg class="sh-tab-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zm6-4a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zm6-3a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+            Monthly
+          </button>
+          <button class="sh-tab" data-tab="ledger">
+            <svg class="sh-tab-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5 4a3 3 0 00-3 3v6a3 3 0 003 3h10a3 3 0 003-3V7a3 3 0 00-3-3H5zm-1 9v-1h5v2H5a1 1 0 01-1-1zm7 1h4a1 1 0 001-1v-1h-5v2zm0-4h5V8h-5v2zM9 8H4v2h5V8z"/></svg>
+            Ledger
+          </button>
+        </nav>
+
+        <!-- Date range toggle -->
+        <div class="sh-range-toggle" style="height:48px;padding:0 20px">
+          <!-- Date range pill — centred, visually tappable -->
+          <button class="sh-range-pill" id="sh-range-pill" aria-label="Change date range">
+            <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z"/></svg>
+            <span id="range-display" style="font-weight:600;color:var(--db-text-1)">Full Period</span>
+            <svg id="range-chevron" width="12" height="12" viewBox="0 0 20 20" fill="currentColor" style="transition:transform .2s;opacity:.6"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"/></svg>
+          </button>
+          <div class="sh-range-presets">
+            <button class="sh-preset active" data-preset="full">Full Period</button>
+            <button class="sh-preset" data-preset="year">This Year</button>
+            <button class="sh-preset" data-preset="12m">Last 12 Months</button>
+          </div>
+        </div>
+
+        <!-- Drum picker -->
+        <div class="sh-range-strip" id="range-strip">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 20px 0;font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.09em;color:var(--db-text-3)">
+            <span>Date Range</span>
+            <span id="sh-range-draft" class="sh-range-draft"></span>
+          </div>
+          <div class="sh-drums">
+            <div class="sh-drum-group"><div class="sh-drum-label">From</div><div class="sh-drum-set" id="drum-from"></div></div>
+            <div class="sh-drum-sep">→</div>
+            <div class="sh-drum-group"><div class="sh-drum-label">To</div><div class="sh-drum-set" id="drum-to"></div></div>
+          </div>
+          <div class="sh-range-actions">
+            <span class="sh-range-hint" id="sh-range-hint"></span>
+            <button class="btn btn-ghost btn-sm" id="sh-range-cancel-btn">Cancel</button>
+            <button class="btn btn-primary btn-sm" id="sh-range-apply-btn">Apply Range →</button>
+          </div>
+        </div>
+
+        <!-- Views -->
+        <div class="sh-content">
+          <div class="sh-view active" id="view-overview"><div id="overview-content"></div></div>
+          <div class="sh-view" id="view-spending"><div id="spending-content"></div></div>
+          <div class="sh-view" id="view-income"><div id="income-content"></div></div>
+          <div class="sh-view" id="view-monthly"><div id="monthly-content"></div></div>
+          <div class="sh-view" id="view-ledger"><div id="ledger-content"></div></div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="sh-footer">
+          <div class="sh-footer-info">
+            <strong id="footer-txn-count">—</strong> transactions &nbsp;·&nbsp;
+            <span id="footer-period">—</span>
+          </div>
+          <div class="sh-footer-actions">
+            <button class="btn btn-ghost btn-sm" data-goto="unvault">
+              <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z"/></svg>
+              Add Statements
+            </button>
+            <button class="btn btn-primary btn-sm" id="sh-export-btn">
+              <svg width="12" height="12" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z"/></svg>
+              Export Session
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
+
+    <!-- ─── PANE 4: SETTINGS ─── -->
+    <div class="app-pane" id="pane-settings">
+      <div class="set-wrap">
+        <div class="set-title">Settings</div>
+        <div class="set-sub">Preferences and session management.</div>
+
+        <div class="set-section">
+          <div class="set-section-title">Extraction API</div>
+          <div class="set-hint">Vision extraction uses a server-side API key (OPENROUTER_API_KEY). No client-side key needed.</div>
+          <input type="hidden" id="set-api-key" value="">
+          <span class="set-saved" id="set-saved" style="display:none">✓ Saved</span>
+        </div>
+
+        <div class="set-section">
+          <div class="set-section-title">Data</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap">
+            <button class="btn btn-ghost btn-sm" id="set-clear-btn">Clear all extracted data</button>
+          </div>
+          <div class="set-hint" style="margin-top:8px">Removes all transactions from this session. Does not affect your original PDF files.</div>
+        </div>
+
+        <div class="set-section">
+          <div class="set-section-title">Session Data</div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+            <button class="btn btn-ghost btn-sm" id="set-export-session-btn">
+              ↓ Export session (.json)
+            </button>
+            <label class="btn btn-ghost btn-sm" style="cursor:pointer">
+              ↑ Import session
+              <input type="file" id="set-import-session-input" accept=".json" style="display:none">
+            </label>
+          </div>
+          <div class="set-hint">Export saves review state and categories. Import restores a previous session.</div>
+        </div>
+
+        <div class="set-section">
+          <div class="set-section-title">About</div>
+          <div style="font-size:13px;color:var(--text-2);line-height:1.6">
+            TaxFlow — v3.0<br>
+            Extraction powered by Claude Vision via server API.<br>
+            PDF processing happens in your browser.
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- .app-content -->
+</div><!-- .app-shell -->
+
+<div class="db-monthly-tooltip" id="monthly-tooltip"></div>
+
+<script>
+/* ============================================================
+   APP STATE — shared across all modules
+   ============================================================ */
+const AppState = {
+  unlockedFiles:    [],     // [{name, bytes: Uint8Array, pages, password?}] — bytes stay
+                            // as uploaded; pdf.js decrypts on read using password.
+  apiKey:           '',
+  extractedData:    null,   // raw bank transactions from Extractor
+  reviewData:       [],     // merged, editable — pending commit
+  committedData:    null,   // final dataset sent to Dashboard
+  customCategories: [],     // user-added category names
+};
+
+// ── Persistence ──
+const Store = (() => {
+  const KEY = 'taxflow_v1';
+  function save() {
+    try {
+      const payload = {
+        reviewData:       AppState.reviewData,
+        committedData:    AppState.committedData,
+        customCategories: AppState.customCategories,
+        savedAt:          new Date().toISOString(),
+      };
+      localStorage.setItem(KEY, JSON.stringify(payload));
+    } catch(e) { console.warn('Store.save failed:', e); }
+  }
+  function load() {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) return false;
+      const p = JSON.parse(raw);
+      if (p.reviewData)       AppState.reviewData       = p.reviewData;
+      if (p.committedData)    AppState.committedData     = p.committedData;
+      if (p.customCategories) AppState.customCategories  = p.customCategories;
+      return p.savedAt || true;
+    } catch(e) { return false; }
+  }
+  function clear() {
+    localStorage.removeItem(KEY);
+    AppState.reviewData = [];
+    AppState.committedData = null; AppState.customCategories = [];
+  }
+  function exportSidecar() {
+    const payload = {
+      version: 1,
+      reviewData:    AppState.reviewData,
+      committedData: AppState.committedData,
+      customCategories: AppState.customCategories,
+      exportedAt:    new Date().toISOString(),
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'taxflow-session.json';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+  async function importSidecar(file) {
+    const text = await file.text();
+    const p = JSON.parse(text);
+    if (p.reviewData)       AppState.reviewData       = p.reviewData;
+    if (p.committedData)    AppState.committedData     = p.committedData;
+    if (p.customCategories) AppState.customCategories  = p.customCategories;
+    save();
+    return p.exportedAt;
+  }
+  return { save, load, clear, exportSidecar, importSidecar };
+})();
+
+
+/* ============================================================
+   APP SHELL — pane routing
+   ============================================================ */
+const App = (() => {
+  const STEP_TO_PANE = {
+    unlock: 'unvault', extract: 'extract', reconcile: 'review',
+    dashboard: 'dashboard', settings: 'settings',
+    unvault: 'unvault', review: 'review',
+  };
+  const PANE_TO_STEP = {
+    unvault: 'unlock', extract: 'extract', review: 'reconcile',
+    dashboard: 'dashboard',
+  };
+
+  function _updateLines() {
+    const steps = ['unlock', 'extract', 'reconcile', 'dashboard'];
+    steps.forEach((s, i) => {
+      if (i === 0) return;
+      const prev = steps[i - 1];
+      const line = document.querySelector(`.pipeline-line[data-after="${prev}"]`);
+      const prevEl = document.querySelector(`.pipeline-step[data-step="${prev}"]`);
+      if (line && prevEl) {
+        line.classList.toggle('done', prevEl.classList.contains('done'));
+      }
+    });
+  }
+
+  function goto(id) {
+    const pane = STEP_TO_PANE[id] || id;
+    const step = PANE_TO_STEP[pane];
+
+    document.querySelectorAll('.pipeline-step').forEach(s => s.classList.remove('active'));
+    if (step) document.querySelector(`.pipeline-step[data-step="${step}"]`)?.classList.add('active');
+
+    document.querySelectorAll('.app-pane').forEach(p => p.classList.remove('active'));
+    document.getElementById(`pane-${pane}`)?.classList.add('active');
+
+    if (pane === 'extract')   Extractor.sync();
+    if (pane === 'review')    Review.render();
+    if (pane === 'dashboard') Dashboard.mount();
+    if (pane === 'settings')  Settings.load();
+  }
+
+  function badgeDone(id) {
+    const step = PANE_TO_STEP[id] || id;
+    const el = document.querySelector(`.pipeline-step[data-step="${step}"]`);
+    if (el && !el.classList.contains('done')) {
+      el.classList.add('done');
+      el.querySelector('.pipeline-circle').textContent = '✓';
+      _updateLines();
+    }
+  }
+
+  return { goto, badgeDone };
+})();
+
+/* ============================================================
+   SETTINGS
+   ============================================================ */
+const Settings = (() => {
+  function load() {
+    const k = sessionStorage.getItem('taxflow_api_key') || '';
+    document.getElementById('set-api-key').value = k;
+    document.getElementById('ex-api-key').value = k;
+    AppState.apiKey = k;
+  }
+  function saveKey(val) {
+    AppState.apiKey = val;
+    sessionStorage.setItem('taxflow_api_key', val);
+    document.getElementById('ex-api-key').value = val;
+    const saved = document.getElementById('set-saved');
+    saved.style.display = 'inline';
+    setTimeout(() => { saved.style.display = 'none'; }, 1500);
+  }
+  async function importSidecar(input) {
+    if (!input.files[0]) return;
+    try {
+      const savedAt = await Store.importSidecar(input.files[0]);
+      alert('Session restored from ' + savedAt);
+      if (AppState.committedData) { App.badgeDone('dashboard'); Dashboard.mount(); }
+        if (AppState.reviewData?.length) App.badgeDone('review');
+    } catch(e) {
+      alert('Import failed: ' + e.message);
+    }
+    input.value = '';
+  }
+
+  function clearData() {
+    if (!confirm('Clear all data from this session? This cannot be undone.')) return;
+    Store.clear();
+    AppState.extractedData = null;
+    AppState.unlockedFiles = [];
+    document.getElementById('uv-queue-list').innerHTML = '';
+    document.getElementById('uv-queue').style.display = 'none';
+    document.querySelectorAll('.pipeline-step').forEach(s => {
+      s.classList.remove('done');
+      const circle = s.querySelector('.pipeline-circle');
+      if (circle) circle.textContent = Array.from(s.parentElement.children)
+        .filter(c => c.classList.contains('pipeline-step')).indexOf(s) + 1;
+    });
+    document.querySelectorAll('.pipeline-line').forEach(l => l.classList.remove('done'));
+    Dashboard.showEmpty();
+    App.goto('unlock');
+  }
+  return { load, saveKey, clearData, importSidecar };
+})();
+
+/* ============================================================
+   MODULE 1: UNVAULT
+   ============================================================ */
+const Unvault = (() => {
+  let _pendingFiles = [];   // Files staged, waiting for Unlock
+
+  function onDragOver(e) {
+    e.preventDefault();
+    document.getElementById('uv-drop').classList.add('drag-over');
+  }
+  function onDragLeave(e) {
+    document.getElementById('uv-drop').classList.remove('drag-over');
+  }
+  function onDrop(e) {
+    e.preventDefault();
+    document.getElementById('uv-drop').classList.remove('drag-over');
+    _stageFiles([...e.dataTransfer.files].filter(f => f.name.toLowerCase().endsWith('.pdf')));
+  }
+  function onFileSelect(input) {
+    _stageFiles([...input.files]);
+    input.value = '';
+  }
+
+  function _stageFiles(files) {
+    if (!files.length) return;
+    const pdfs = files.filter(f => f.name.toLowerCase().endsWith('.pdf'));
+    if (pdfs.length !== files.length) _status('info', 'Non-PDF files skipped.');
+    if (!pdfs.length) { _status('error', 'No PDF files found.'); return; }
+
+    // Dedupe by name against already-staged and already-processed
+    const processed = new Set(AppState.unlockedFiles.map(f => f.name));
+    const staged    = new Set(_pendingFiles.map(f => f.name));
+    const newFiles  = pdfs.filter(f => !processed.has(f.name) && !staged.has(f.name));
+    const skipped   = pdfs.length - newFiles.length;
+
+    _pendingFiles.push(...newFiles);
+    _renderPending();
+
+    if (skipped > 0) _status('info', `${skipped} already staged/processed — skipped.`);
+    else _status('', '');
+    document.getElementById('uv-btn').disabled = _pendingFiles.length === 0;
+  }
+
+  function _renderPending() {
+    const wrap = document.getElementById('uv-pending');
+    const list = document.getElementById('uv-pending-list');
+    if (!_pendingFiles.length) { wrap.style.display = 'none'; return; }
+    wrap.style.display = 'block';
+    list.innerHTML = _pendingFiles.map((f, i) => `
+      <div class="uv-queue-item">
+        <span style="font-size:15px">📄</span>
+        <span class="uv-queue-name">${f.name}</span>
+        <span class="uv-queue-status" style="display:flex;gap:6px;align-items:center">
+          <span class="pill pill-grey">Pending</span>
+          <button class="uv-remove-staged-btn" data-idx="${i}" style="background:none;border:none;cursor:pointer;color:var(--text-3);font-size:14px;line-height:1">×</button>
+        </span>
+      </div>`).join('');
+  }
+
+  function removeStaged(idx) {
+    _pendingFiles.splice(idx, 1);
+    _renderPending();
+    document.getElementById('uv-btn').disabled = _pendingFiles.length === 0;
+  }
+
+  async function unlock() {
+    if (!_pendingFiles.length) return;
+    const password = document.getElementById('uv-password').value;
+    const btn = document.getElementById('uv-btn');
+    btn.disabled = true;
+
+    /* Decryption is done by pdf.js, NOT pdf-lib.
+       pdf-lib has no decryption support at all — it never accepted a
+       `password` option, so the old code silently ignored the password and
+       then threw "Input document to `PDFDocument.load` is encrypted" the
+       moment one was supplied (because `ignoreEncryption` was set to
+       `!password`). With no password it "succeeded" via ignoreEncryption but
+       produced a re-saved file whose content streams were still encrypted,
+       which pdf.js then couldn't read. Either way the Unvault step could
+       never actually unlock a protected statement.
+
+       pdf.js implements the standard security handler properly, and the
+       Extractor already renders every page through pdf.js. So there is no
+       need to produce a decrypted PDF at all: verify the password here, keep
+       the ORIGINAL bytes, and carry the password forward for extraction. */
+    const pdfjsLib = window['pdfjs-dist/build/pdf'];
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    let successCount = 0, failCount = 0;
+    const errors = [];
+
+    for (let i = 0; i < _pendingFiles.length; i++) {
+      const file = _pendingFiles[i];
+      _status('info', `Unlocking ${i+1}/${_pendingFiles.length}: ${file.name}…`);
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        let pdfDoc;
+        try {
+          // slice(0) — pdf.js transfers the buffer, so give it its own copy
+          pdfDoc = await pdfjsLib.getDocument({
+            data: bytes.slice(0),
+            password: password || undefined,
+          }).promise;
+        } catch(e) {
+          // pdf.js reports these as PasswordException with a numeric code:
+          // 1 = NEED_PASSWORD, 2 = INCORRECT_PASSWORD
+          const nm = e?.name === 'PasswordException';
+          if (nm && e.code === 1) {
+            errors.push(`${file.name}: password protected — enter the PDF password above`);
+          } else if (nm) {
+            errors.push(`${file.name}: wrong password`);
+          } else {
+            errors.push(`${file.name}: ${e.message || 'could not be opened'}`);
+          }
+          failCount++;
+          continue;
+        }
+
+        const pageCount = pdfDoc.numPages;
+        pdfDoc.destroy();
+        AppState.unlockedFiles.push({
+          name: file.name, bytes, pages: pageCount,
+          password: password || undefined,   // pdf.js needs it again at extraction
+        });
+        _addToProcessedQueue(file.name, pageCount);
+        successCount++;
+      } catch(err) {
+        errors.push(`${file.name}: ${err.message}`);
+        failCount++;
+      }
+    }
+
+    /* Keep anything that failed staged, so a wrong/missing password is a
+       retype-and-retry rather than a re-drag-everything. Only clear the
+       password box when every file went through. */
+    const failedNames = new Set(errors.map(e => e.split(':')[0]));
+    _pendingFiles = _pendingFiles.filter(f => failedNames.has(f.name));
+    _renderPending();
+    if (!failCount) document.getElementById('uv-password').value = '';
+    btn.disabled = _pendingFiles.length === 0;
+
+    if (failCount === 0) {
+      _status('success', `✓ ${successCount} file${successCount!==1?'s':''} unlocked successfully`);
+    } else if (successCount === 0) {
+      _status('error', `${errors.join(' · ')} — still queued, fix the password and press Unlock again.`);
+    } else {
+      _status('info', `${successCount} unlocked · ${failCount} still queued: ${errors.join(', ')}`);
+    }
+
+    if (successCount > 0) {
+    App.badgeDone('unvault');
+    // Scroll to the continue button and pulse it
+    setTimeout(() => {
+      const btn = document.getElementById('uv-continue-btn');
+      if (btn) {
+        btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        btn.style.transform = 'scale(1.04)';
+        btn.style.transition = 'transform .2s';
+        setTimeout(() => { btn.style.transform = ''; }, 600);
+      }
+    }, 300);
+  }
+}
+
+  function _addToProcessedQueue(name, pages) {
+    const queue = document.getElementById('uv-queue');
+    const list  = document.getElementById('uv-queue-list');
+    queue.style.display = 'block';
+    const item = document.createElement('div');
+    item.className = 'uv-queue-item';
+    item.innerHTML = `
+      <span style="font-size:16px">📄</span>
+      <span class="uv-queue-name">${name}</span>
+      <span class="uv-queue-status"><span class="pill pill-green">✓ ${pages}pp</span></span>`;
+    list.appendChild(item);
+  }
+
+  function _status(type, msg) {
+    const el = document.getElementById('uv-status');
+    if (!el) return;
+    el.className = 'uv-status' + (type ? ' '+type : '');
+    el.textContent = msg;
+    el.style.display = msg ? 'block' : 'none';
+  }
+
+  return { onDragOver, onDragLeave, onDrop, onFileSelect, unlock, removeStaged };
+})();
+
+async function loadDemo() {
+  const btn = document.getElementById('uv-demo-btn');
+  btn.disabled = true;
+  btn.textContent = 'Loading sample…';
+
+  try {
+    const pdfResp = await fetch('samples/sample-statement.pdf');
+    if (!pdfResp.ok) throw new Error(`PDF fetch HTTP ${pdfResp.status}`);
+
+    const pdfBytes = new Uint8Array(await pdfResp.arrayBuffer());
+
+    const pdfjsLib = window['pdfjs-dist/build/pdf'];
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const pdfDoc = await pdfjsLib.getDocument({ data: pdfBytes.slice(0) }).promise;
+    const pageCount = pdfDoc.numPages;
+    await pdfDoc.destroy();
+
+    AppState.unlockedFiles.push({
+      name: 'sample-statement.pdf',
+      bytes: pdfBytes,
+      pages: pageCount,
+    });
+
+    App.badgeDone('unlock');
+    App.goto('extract');
+    Extractor.sync();
+    setTimeout(() => Extractor.run(), 400);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = 'Try with sample statement';
+    alert('Could not load sample data: ' + e.message);
+  }
+}
+
+/* ============================================================
+   MODULE 2: EXTRACTOR
+   ============================================================ */
+const Extractor = (() => {
+  /* Collision-proof transaction ids. Session-scoped counter plus a per-load
+     prefix, so ids stay unique across files, across runs within a session,
+     and across sessions that get merged via an imported sidecar. */
+  const _idRun = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  let _idN = 0;
+  function _idSeq() { return `${_idRun}_${(++_idN).toString(36)}`; }
+
+  const CATEGORY_RULES = `You are a South African bank statement transaction categoriser.
+Given a transaction reference string, assign it to exactly one of these categories:
+Groceries, Fuel, Utilities, Medical, Dining Out, Insurance, Clothing & Apparel,
+Trading & Evaluation Fees, Subscriptions, Mobile & Data, Home & Maintenance,
+ATM / Cash, Entertainment, Transfers, Directors' & Members' Loans, Trading P&L,
+Trading Capital Drawdown, Investment Income, Transport & Rides, Salary / Income,
+Freelance Income, Uncategorised.
+
+SA-specific rules:
+- CHECKERS, WOOLWORTHS FOOD, PICK N PAY, SPAR, SHOPRITE → Groceries
+- ENGEN, BP, SHELL, SASOL, ASTRON → Fuel
+- CITY POWER, POWERTIME, ESKOM, RATES, DSTV, SHOWMAX, NETFLIX → Utilities
+- DISCHEM, CLICKS, NETCARE, MEDICLINIC, DISCOVERY HEALTH → Medical
+- NANDOS, OCEAN BASKET, STEERS, KFC, WIMPY, UBER EATS, MR DELIVERY → Dining Out
+- OLD MUTUAL, DISCOVERY, MIWAY, OUTSURANCE → Insurance
+- TOPSTEP, FTMO, FUNDED TRADER → Trading & Evaluation Fees
+- PERESEC, PEREGRINE → Trading Capital Drawdown
+- VODACOM, MTN, TELKOM, RAIN, CELL C → Mobile & Data
+- UBER, BOLT, GAUTRAIN → Transport & Rides
+- ATM, CASH WITHDRAWAL → ATM / Cash
+- SALARY, WAGES, PAYROLL → Salary / Income`;
+
+  function sync() {
+    const list = document.getElementById('ex-file-list');
+    const btn  = document.getElementById('ex-run-btn');
+    const key  = sessionStorage.getItem('taxflow_api_key') || '';
+    document.getElementById('ex-api-key').value = key;
+    AppState.apiKey = key;
+
+    if (!AppState.unlockedFiles.length) {
+      list.innerHTML = '<div class="ex-queue-empty">No files unlocked yet. Go to Unvault first.</div>';
+      btn.disabled = true;
+      btn.textContent = '▶ Run Extraction';
+      return;
+    }
+    list.innerHTML = AppState.unlockedFiles.map((f, i) => `
+      <div class="ex-file-row">
+        <span class="ex-file-icon">📄</span>
+        <span class="ex-file-name">${f.name}</span>
+        <span class="ex-file-pages">${f.pages} page${f.pages !== 1 ? 's' : ''}</span>
+        <span class="ex-file-status">
+          ${f.extracted
+            ? `<span class="pill pill-green">✓ Extracted</span><button class="ex-reextract-btn" data-idx="${i}" title="Force re-extract this file">↻</button>`
+            : `<span class="pill pill-blue">Ready</span>`}
+        </span>
+      </div>
+    `).join('');
+    // Only files not yet cleanly extracted this session actually run — a
+    // file already marked done is skipped rather than re-sent to the vision
+    // API, so adding one new statement doesn't re-process everything else
+    // already in the queue.
+    const pendingCount = AppState.unlockedFiles.filter(f => !f.extracted).length;
+    btn.disabled = pendingCount === 0;
+    btn.textContent = pendingCount > 0 ? `▶ Run Extraction (${pendingCount} new)` : '✓ All Extracted';
+  }
+
+  // Clears a file's "extracted" flag so the next Run Extraction picks it
+  // back up, for when you deliberately want to redo one (e.g. after a fix
+  // like this one, or if you suspect a page came out wrong).
+  function reextract(idx) {
+    const f = AppState.unlockedFiles[idx];
+    if (!f) return;
+    f.extracted = false;
+    f.extractedTxns = null;
+    sync();
+  }
+
+  function _log(msg, type = '') {
+    const log = document.getElementById('ex-log');
+    const line = document.createElement('span');
+    line.className = 'ex-log-line' + (type ? ' ' + type : '');
+    line.textContent = msg;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function _setProgress(pct, label) {
+    document.getElementById('ex-progress-fill').style.width = pct + '%';
+    document.getElementById('ex-progress-pct').textContent = Math.round(pct) + '%';
+    document.getElementById('ex-progress-label').textContent = label;
+  }
+
+  async function _renderPage(pdfDoc, pageNum) {
+    const page = await pdfDoc.getPage(pageNum);
+    const viewport = page.getViewport({ scale: 1.5 });
+
+    const canvas = document.createElement('canvas');
+    canvas.width  = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    return canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+  }
+
+
+
+  const MAX_TOKENS = 8192; // raised from 4096 — dense statement pages (20+ rows) were getting cut off mid-JSON
+
+  async function _extractPage(base64Image, filename, pageNum) {
+    const prompt = `Extract ALL transactions from this bank statement page as JSON.
+Return ONLY a JSON array with no markdown. Each transaction:
+{
+  "post_date": "YYYY-MM-DD",
+  "trans_date": "YYYY-MM-DD",
+  "txn_type": "Credit" or "Debit",
+  "reference": "merchant or description",
+  "amount": number (positive for credit, negative for debit),
+  "balance": number (running balance after transaction),
+  "fees": number (0 if none)
+}
+
+${CATEGORY_RULES}
+
+Also include a "category" field on each transaction.
+If no transactions visible on this page return [].`;
+
+    const resp = await fetch('/api/extract', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64Image, prompt, max_tokens: MAX_TOKENS }),
+    });
+
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(`API ${resp.status}: ${err.error || resp.statusText}`);
+    }
+
+    const data = await resp.json();
+    const choice = data.choices?.[0];
+    const text = choice?.message?.content || '[]';
+    const clean = text.replace(/```json|```/g, '').trim();
+
+    if (choice?.finish_reason === 'length') {
+      throw new Error(`Response truncated (hit ${MAX_TOKENS} max_tokens) — page likely has more transactions than fit. Raw tail: "${clean.slice(-120)}"`);
+    }
+    try {
+      return JSON.parse(clean);
+    } catch (e) {
+      throw new Error(`Could not parse model response as JSON (${e.message}). Raw response: "${clean.slice(0, 200)}${clean.length > 200 ? '…' : ''}"`);
+    }
+  }
+
+  function _fmtZAR(n) {
+    const abs = Math.abs(n);
+    const parts = abs.toFixed(2).split('.');
+    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return (n < 0 ? '-' : '') + 'R ' + parts.join('.');
+  }
+
+  function _showPagePreview(pageNum, totalPages, imgDataUrl, txns) {
+    const preview = document.getElementById('ex-page-preview');
+    preview.classList.add('active');
+    document.getElementById('ex-page-title').textContent = `Page ${pageNum} of ${totalPages}`;
+    document.getElementById('ex-page-count').textContent = `${txns.length} transaction${txns.length !== 1 ? 's' : ''}`;
+    document.getElementById('ex-page-img').src = imgDataUrl;
+    document.getElementById('ex-page-txns').innerHTML = txns.map(t => {
+      const isCredit = t.amount >= 0;
+      return `<div class="ex-page-txn-row">
+        <span class="ex-page-txn-ref">${t.reference}</span>
+        <span class="ex-page-txn-amt ${isCredit ? 'credit' : 'debit'}">${_fmtZAR(t.amount)}</span>
+        <span class="ex-page-txn-cat">${t.category || ''}</span>
+      </div>`;
+    }).join('');
+  }
+
+  function _showReconciliation(txns, meta) {
+    const totals = meta.totals;
+    const credits = txns.filter(t => t.amount >= 0).reduce((s, t) => s + t.amount, 0);
+    const debits  = txns.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+    const net     = Math.round((credits - debits) * 100) / 100;
+    const expectedNet = Math.round((totals.closing_balance - totals.opening_balance) * 100) / 100;
+    const match   = Math.abs(net - expectedNet) < 0.02;
+
+    const card = document.getElementById('ex-recon-card');
+    card.style.display = 'block';
+    document.getElementById('ex-recon-grid').innerHTML = `
+      <div class="ex-recon-item">
+        <div class="ex-recon-label">Total Credits</div>
+        <div class="ex-recon-val">${_fmtZAR(credits)}</div>
+        <div class="ex-recon-label" style="margin-top:4px">Statement: ${_fmtZAR(totals.total_credits)}</div>
+      </div>
+      <div class="ex-recon-item">
+        <div class="ex-recon-label">Total Debits</div>
+        <div class="ex-recon-val">${_fmtZAR(debits)}</div>
+        <div class="ex-recon-label" style="margin-top:4px">Statement: ${_fmtZAR(totals.total_debits)}</div>
+      </div>
+      <div class="ex-recon-item">
+        <div class="ex-recon-label">Net Movement</div>
+        <div class="ex-recon-val">${_fmtZAR(net)}</div>
+        <div class="ex-recon-match" style="margin-top:4px">${match ? '✓ Reconciled' : '✗ Mismatch'}</div>
+      </div>`;
+  }
+
+  async function run() {
+    if (!AppState.unlockedFiles.length) return;
+
+    const pending = AppState.unlockedFiles.filter(f => !f.extracted);
+    if (!pending.length) {
+      alert('Every file in the queue has already been extracted. Use the ↻ button next to a file to force it to run again.');
+      return;
+    }
+
+    document.getElementById('ex-run-btn').disabled = true;
+    document.getElementById('ex-progress-section').style.display = 'block';
+    document.getElementById('ex-results-card').style.display = 'none';
+    document.getElementById('ex-recon-card').style.display = 'none';
+    document.getElementById('ex-page-preview').classList.remove('active');
+    document.getElementById('ex-log').innerHTML = '';
+
+    const skipped = AppState.unlockedFiles.length - pending.length;
+    if (skipped > 0) {
+      _log(`Skipping ${skipped} file${skipped !== 1 ? 's' : ''} already extracted this session.`, 'info');
+    }
+
+    const totalPages = pending.reduce((s, f) => s + f.pages, 0);
+    let pagesProcessed = 0;
+
+    const pdfjsLib = window['pdfjs-dist/build/pdf'];
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+    for (const file of pending) {
+      _log(`Processing ${file.name} (${file.pages} pages)…`, 'info');
+
+      let pdfDoc = null;
+      try {
+        pdfDoc = await pdfjsLib.getDocument({
+          data: file.bytes.slice(0),
+          password: file.password || undefined,
+        }).promise;
+      } catch(err) {
+        _log(`  ✗ Could not open PDF: ${err.message}`, 'err');
+        pagesProcessed += file.pages;
+        continue;
+      }
+
+      const pageNums = Array.from({ length: file.pages }, (_, i) => i + 1);
+      const fileTxns = new Array(file.pages).fill(null).map(() => []);
+      let fileHadError = false;
+
+      for (const p of pageNums) {
+        try {
+          const img = await _renderPage(pdfDoc, p);
+          const imgDataUrl = 'data:image/jpeg;base64,' + img;
+          const txns = await _extractPage(img, file.name, p);
+          fileTxns[p - 1] = txns;
+
+          _showPagePreview(p, file.pages, imgDataUrl, txns);
+
+          pagesProcessed++;
+          _setProgress((pagesProcessed / totalPages) * 100,
+            `${file.name} — page ${p}/${file.pages}`);
+          _log(`  Page ${p}/${file.pages} ✓ ${txns.length} transactions extracted`, 'ok');
+        } catch(err) {
+          fileHadError = true;
+          pagesProcessed++;
+          _log(`  Page ${p}/${file.pages} ✗ ${err.message}`, 'err');
+        }
+      }
+
+      file.extractedTxns = fileTxns.flat().map(t => ({
+        ...t, source_file: file.name, id: `txn_${_idSeq()}`,
+      }));
+      file.extracted = !fileHadError;
+      if (fileHadError) _log(`  ⚠ ${file.name} had page errors — will retry in full next run.`, 'err');
+
+      await pdfDoc.destroy();
+    }
+
+    const allTxns = AppState.unlockedFiles.flatMap(f => f.extractedTxns || []);
+    allTxns.sort((a, b) => a.post_date.localeCompare(b.post_date));
+
+    AppState.extractedData = allTxns;
+
+    Review.mergeFromExtractor(allTxns);
+    Store.save();
+
+    _setProgress(100, 'Complete');
+    _log(`\nDone — ${allTxns.length} total bank transactions across all files. Continue to Reconcile to categorise and commit.`, 'ok');
+
+    const months = new Set(allTxns.map(t => t.post_date.slice(0,7)));
+    document.getElementById('ex-stat-txns').textContent   = allTxns.length.toLocaleString();
+    document.getElementById('ex-stat-files').textContent  = AppState.unlockedFiles.length;
+    document.getElementById('ex-stat-months').textContent = months.size;
+    document.getElementById('ex-results-card').style.display = 'block';
+
+    App.badgeDone('extract');
+    sync();
+  }
+
+  function openDashboard() {
+    App.goto('reconcile');
+  }
+
+  return { sync, run, openDashboard, reextract };
+})();
+
+/* ============================================================
+   MODULE 3: DASHBOARD
+   ============================================================ */
+/* ============================================================
+   CATEGORY COLOUR MAP
+   ============================================================ */
+
+/* ============================================================
+   CATEGORY COLOUR MAP  (vivid palette for dark theme)
+   ============================================================ */
+const CAT_COLOURS = {
+  'Groceries':                  '#4F8EF7',
+  'Fuel':                       '#FFB547',
+  'Utilities':                  '#00D4FF',
+  'Medical':                    '#FF4D6A',
+  'Dining Out':                 '#FF7A3D',
+  'Insurance':                  '#A78BFA',
+  'Clothing & Apparel':         '#F472B6',
+  'Trading & Evaluation Fees':  '#FF4D6A',
+  'Subscriptions':              '#818CF8',
+  'Mobile & Data':              '#38BDF8',
+  'Home & Maintenance':         '#86EFAC',
+  'ATM / Cash':                 '#94A3B8',
+  'Entertainment':              '#C084FC',
+  'Transfers':                  '#64748B',
+  "Directors' & Members' Loans":'#FBBF24',
+  'Uncategorised':              '#374151',
+  'Trading Capital Drawdown':   '#00E5A0',
+  'Transport & Rides':          '#FB923C',
+  'Salary / Income':            '#00E5A0',
+  'Freelance Income':           '#34D399',
+  'Investment Income':          '#6EE7B7',
+  'Trading P&L':                '#6C63FF',
+};
+function catColour(cat) { return CAT_COLOURS[cat] || '#4B5563'; }
+
+/* ============================================================
+   BUCKET CLASSIFICATION
+   ------------------------------------------------------------
+   Money hitting the bank account is not the same thing as income.
+   Three buckets, and only ONE of them is income:
+
+   operating — the actual business. Real income, real overheads.
+   capital   — money moved into/out of the business but not earned:
+               trading capital drawdowns, directors' loan flows.
+               Financing. Never income, never an expense.
+   trading   — broker-statement performance: realised P&L, interest,
+               trading/evaluation fees. Reported on its own tab so a
+               drawdown and the P&L behind it are never double-counted.
+   ============================================================ */
+const CAPITAL_CATEGORIES = ['Trading Capital Drawdown', "Directors' & Members' Loans"];
+const TRADING_CATEGORIES = ['Trading P&L', 'Investment Income', 'Trading & Evaluation Fees'];
+const BUCKET_OF = {};
+CAPITAL_CATEGORIES.forEach(c => { BUCKET_OF[c] = 'capital'; });
+TRADING_CATEGORIES.forEach(c => { BUCKET_OF[c] = 'trading'; });
+
+function txnBucket(t)  { return (t && BUCKET_OF[t.category]) || 'operating'; }
+function isOperating(t){ return txnBucket(t) === 'operating'; }
+function isCapital(t)  { return txnBucket(t) === 'capital'; }
+function isTrading(t)  { return txnBucket(t) === 'trading'; }
+function operatingOnly(txns) { return txns.filter(isOperating); }
+function byCategory(txns, cat) { return txns.filter(t => t.category === cat); }
+function sumAmt(txns) { return txns.reduce((s,t) => s + t.amount, 0); }
+function sumPos(txns) { return txns.reduce((s,t) => s + (t.amount > 0 ? t.amount : 0), 0); }
+function sumNeg(txns) { return txns.reduce((s,t) => s + (t.amount < 0 ? t.amount : 0), 0); }
+
+/* Everything the Trading tab needs, derived from one filtered set. */
+function tradingSummary(txns) {
+  const pnl      = byCategory(txns, 'Trading P&L');
+  const interest = byCategory(txns, 'Investment Income');
+  const fees     = byCategory(txns, 'Trading & Evaluation Fees');
+  const drawdown = byCategory(txns, 'Trading Capital Drawdown');
+  const loans    = byCategory(txns, "Directors' & Members' Loans");
+  const pnlNet   = sumAmt(pnl), intNet = sumAmt(interest), feeNet = sumAmt(fees);
+  return {
+    pnl, interest, fees, drawdown, loans,
+    pnlGross: sumPos(pnl), pnlLoss: sumNeg(pnl), pnlNet,
+    intNet, feeNet,
+    statementNet: pnlNet + intNet + feeNet,
+    drawnOut:  sumPos(drawdown),          // broker → bank
+    paidIn:    sumNeg(drawdown),          // bank → broker (negative)
+    drawnNet:  sumAmt(drawdown),
+    loansIn:   sumPos(loans),
+    loansOut:  sumNeg(loans),
+    loansNet:  sumAmt(loans),
+  };
+}
+
+/* ============================================================
+   UTILITY FUNCTIONS
+   ============================================================ */
+function fmtZAR(n, forceSign = false) {
+  const abs = Math.abs(n);
+  const parts = abs.toFixed(2).split('.');
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const str = 'R ' + parts.join('.');
+  if (n < 0) return '-' + str;
+  if (forceSign && n > 0) return '+' + str;
+  return str;
+}
+function fmtDate(iso) {
+  const [y,m,d] = iso.split('-');
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${d} ${months[parseInt(m)-1]} ${y}`;
+}
+function fmtMonth(iso) {
+  const [y,m] = iso.split('-');
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${months[parseInt(m)-1]} ${y}`;
+}
+
+/* ============================================================
+   SHELL — navigation, date range, data state
+   ============================================================ */
+const Shell = (() => {
+  let _data = { transactions: [], metadata: {} };
+  let _rangeOpen = false;
+  let _fromDate = null;     // applied — what getFiltered() and every KPI uses
+  let _toDate   = null;
+  let _draftFrom = null;    // what the drums are currently showing
+  let _draftTo   = null;
+  let _drumState = { from: {}, to: {} };
+  let _drumCols  = { from: {}, to: {} };   // { day, month, year } column elements
+
+  function loadData(dataset) {
+    _data = dataset;
+    const sorted = [..._data.transactions].sort((a,b) => a.post_date.localeCompare(b.post_date));
+    _fromDate = sorted.length ? sorted[0].post_date : new Date().toISOString().slice(0,10);
+    _toDate   = sorted.length ? sorted[sorted.length-1].post_date : _fromDate;
+    _syncDrumsToRange();
+    _updateRangeDisplay();
+    _updateFooter();
+    document.querySelectorAll('.sh-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector('[data-tab="overview"]')?.classList.add('active');
+    document.querySelectorAll('.sh-view').forEach(v => v.classList.remove('active'));
+    document.getElementById('view-overview')?.classList.add('active');
+    Dashboard.Overview.render();
+  }
+
+  function init() { /* loadData drives everything */ }
+
+  function nav(tab) {
+    document.querySelectorAll('.sh-tab').forEach(t => t.classList.remove('active'));
+    document.querySelector(`[data-tab="${tab}"]`)?.classList.add('active');
+    document.querySelectorAll('.sh-view').forEach(v => v.classList.remove('active'));
+    document.getElementById(`view-${tab}`)?.classList.add('active');
+    if (tab === 'overview') Dashboard.Overview.render();
+    if (tab === 'spending') Dashboard.Spending.render();
+    if (tab === 'income')   Dashboard.Income.render();
+    if (tab === 'monthly')  Dashboard.Monthly.render();
+    if (tab === 'ledger')   Dashboard.Ledger.render();
+  }
+
+  /* The picker edits a DRAFT range. Nothing reaches _fromDate/_toDate — and
+     nothing re-renders — until Apply is pressed. Previously every drum scroll
+     committed live, and merely re-opening the picker re-committed the stale
+     build-time index, which is what made the range snap back to the start of
+     the full period and the KPIs look frozen. */
+  function toggleRange(forceState) {
+    _rangeOpen = (forceState === undefined) ? !_rangeOpen : !!forceState;
+    document.getElementById('range-strip').classList.toggle('open', _rangeOpen);
+    document.getElementById('range-chevron').style.transform = _rangeOpen ? 'rotate(180deg)' : '';
+    // Always (re)build from the APPLIED range, so the picker opens showing
+    // exactly what is currently in force.
+    if (_rangeOpen) _syncDrumsToRange();
+  }
+
+  function applyRange() {
+    _fromDate = _draftFrom;
+    _toDate   = _draftTo;
+    // A hand-picked range is not one of the presets any more.
+    document.querySelectorAll('.sh-preset').forEach(b => b.classList.remove('active'));
+    _updateRangeDisplay(); _updateFooter(); _reRender();
+    toggleRange(false);
+  }
+
+  function cancelRange() {
+    _draftFrom = _fromDate; _draftTo = _toDate;
+    toggleRange(false);
+  }
+
+  function getFiltered() {
+    return _data.transactions.filter(t => t.post_date >= _fromDate && t.post_date <= _toDate);
+  }
+
+  function applyPreset(preset, btnEl) {
+    document.querySelectorAll('.sh-preset').forEach(b => b.classList.remove('active'));
+    (btnEl || document.querySelector(`.sh-preset[data-preset="${preset}"]`))?.classList.add('active');
+    const all = _data.transactions;
+    const now = new Date();
+    if (preset === 'full') {
+      const sorted = [...all].sort((a,b) => a.post_date.localeCompare(b.post_date));
+      _fromDate = sorted.length ? sorted[0].post_date : now.toISOString().slice(0,10);
+      _toDate   = sorted.length ? sorted[sorted.length-1].post_date : _fromDate;
+    } else if (preset === 'year') {
+      _fromDate = `${now.getFullYear()}-01-01`;
+      _toDate   = `${now.getFullYear()}-12-31`;
+    } else if (preset === '12m') {
+      const from = new Date(now); from.setFullYear(from.getFullYear()-1);
+      _fromDate = from.toISOString().slice(0,10);
+      _toDate   = now.toISOString().slice(0,10);
+    }
+    _syncDrumsToRange();
+    _updateRangeDisplay();
+    _updateFooter();
+    _reRender();
+  }
+
+  function _reRender() {
+    const active = document.querySelector('.sh-tab.active')?.dataset.tab;
+    if (active) nav(active);
+  }
+
+  function _updateRangeDisplay() {
+    if (_fromDate && _toDate)
+      document.getElementById('range-display').textContent =
+        `${fmtDate(_fromDate)} → ${fmtDate(_toDate)}`;
+  }
+
+  function _updateFooter() {
+    const txns = getFiltered();
+    document.getElementById('footer-txn-count').textContent = txns.length.toLocaleString();
+    if (_fromDate && _toDate)
+      document.getElementById('footer-period').textContent =
+        `${fmtDate(_fromDate)} – ${fmtDate(_toDate)}`;
+  }
+
+  /* ── Drum picker ── */
+  const ITEM_H = 40;
+
+  function _initDrums() {
+    _buildDrumSet('drum-from', _fromDate || new Date().toISOString().slice(0,10), 'from');
+    _buildDrumSet('drum-to',   _toDate   || new Date().toISOString().slice(0,10), 'to');
+  }
+
+  function _buildDrumSet(containerId, isoDate, side) {
+    const container = document.getElementById(containerId);
+    if (!container) return;
+    container.innerHTML = '';
+    const [y,m,d] = isoDate.split('-').map(Number);
+    const days   = Array.from({length:31},(_,i)=>String(i+1).padStart(2,'0'));
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const years  = Array.from({length:5},(_,i)=>String(2023+i));
+    _drumState[side] = { day:d, month:m, year:y };
+    _drumCols[side]  = {};
+    [{items:days,key:'day',selectedIdx:d-1},{items:months,key:'month',selectedIdx:m-1},{items:years,key:'year',selectedIdx:y-2023}]
+      .forEach(({items,key,selectedIdx},colI) => {
+        const col = _makeDrumCol(items,key,selectedIdx,side);
+        _drumCols[side][key] = col;
+        container.appendChild(col);
+        if (colI < 2) {
+          const sep = document.createElement('div');
+          sep.className = 'sh-drum-sep'; sep.textContent='/';
+          container.appendChild(sep);
+        }
+      });
+    _refreshDayLimits(side);
+  }
+
+  // Single shared drag state for every drum column, and exactly one pair of
+  // window-level mousemove/mouseup listeners for the whole app (registered
+  // once, below, outside _makeDrumCol). Previously each call to
+  // _makeDrumCol — which happens every time the dashboard mounts or a date
+  // preset is clicked — added its own window.addEventListener('mousemove'/
+  // 'mouseup', ...) that was never removed, leaking a pair of listeners
+  // (referencing detached DOM) on every rebuild.
+  let _drag = null; // { col, itemEls, key, side, dragY, dragScroll, lastY, lastT, vel, raf }
+
+  window.addEventListener('mousemove', e => {
+    if (!_drag) return;
+    const now = Date.now();
+    _drag.vel   = (_drag.lastY - e.clientY) / Math.max(1, now - _drag.lastT);
+    _drag.lastY = e.clientY; _drag.lastT = now;
+    _drag.col.scrollTop = _drag.dragScroll + (_drag.dragY - e.clientY);
+  });
+  window.addEventListener('mouseup', () => {
+    if (!_drag) return;
+    const { col } = _drag;
+    col.style.cursor = 'grab';
+    let v = _drag.vel * 16;
+    _drag = null;
+    (function coast() {
+      if (Math.abs(v) < 0.5) { _snapAndApply(col); return; }
+      col.scrollTop += v; v *= 0.88;
+      col._raf = requestAnimationFrame(coast);
+    })();
+  });
+
+  // The app's own JS is now the single authority for where a drum column
+  // comes to rest — the CSS scroll-snap that used to sit alongside it has
+  // been removed (see .sh-drum-col) because the two were fighting each
+  // other: the browser would silently re-snap the scroll position *after*
+  // our debounced commit already fired, so the applied date didn't always
+  // match what was visibly selected. This snaps precisely to the resting
+  // item, then commits.
+  function _snapAndApply(col) {
+    const target = col._currentIdx * ITEM_H;
+    if (Math.abs(col.scrollTop - target) > 0.5) col.scrollTo({ top: target, behavior: 'smooth' });
+    _updateDraft();   // draft only — Apply is what commits
+  }
+
+  function _makeDrumCol(items, key, selectedIdx, side) {
+    const col = document.createElement('div');
+    col.className = 'sh-drum-col';
+    const top = document.createElement('div'); top.className = 'sh-drum-spacer'; col.appendChild(top);
+    const itemEls = [];
+    items.forEach((label,i) => {
+      const el = document.createElement('div');
+      el.className = 'sh-drum-item' + (i === selectedIdx ? ' selected' : '');
+      el.textContent = label; col.appendChild(el); itemEls.push(el);
+      // Click a value directly instead of only being able to drag/scroll to
+      // it. This scrolls the column so the clicked item settles in the
+      // centre slot, which flows through the same scroll -> debounce ->
+      // apply pipeline as dragging, so there's one source of truth either way.
+      el.addEventListener('click', () => col.scrollTo({ top: i * ITEM_H, behavior: 'smooth' }));
+    });
+    const bot = document.createElement('div'); bot.className = 'sh-drum-spacer'; col.appendChild(bot);
+    col._jumpTo = selectedIdx; col._items = itemEls; col._currentIdx = selectedIdx;
+    let scrollTimer = null;
+
+    function _upd(idx) {
+      if (idx === col._currentIdx) return;
+      itemEls[col._currentIdx]?.classList.remove('selected');
+      // _maxIdx keeps the day column off dates the month doesn't have.
+      const ceiling = (col._maxIdx !== undefined) ? Math.min(items.length-1, col._maxIdx) : items.length-1;
+      col._currentIdx = Math.max(0, Math.min(ceiling, idx));
+      itemEls[col._currentIdx]?.classList.add('selected');
+      // _jumpTo must track the live selection. It used to be written once at
+      // build time and never again, so re-opening the picker scrolled every
+      // column back to its original index — and that scroll re-committed the
+      // stale date. This one line is why the range kept resetting.
+      col._jumpTo = col._currentIdx;
+      if (key==='day')   _drumState[side].day   = col._currentIdx+1;
+      if (key==='month') _drumState[side].month  = col._currentIdx+1;
+      if (key==='year')  _drumState[side].year   = 2023+col._currentIdx;
+      if (key==='month' || key==='year') _refreshDayLimits(side);
+    }
+    col.addEventListener('scroll', () => {
+      _upd(Math.round(col.scrollTop/ITEM_H));
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => { _upd(Math.round(col.scrollTop/ITEM_H)); _snapAndApply(col); }, 120);
+    }, {passive:true});
+
+    col.addEventListener('mousedown', e => {
+      e.preventDefault();
+      cancelAnimationFrame(col._raf); // stop any in-flight coast from a previous drag on this column
+      _drag = { col, dragY: e.clientY, dragScroll: col.scrollTop, lastY: e.clientY, lastT: Date.now(), vel: 0 };
+      col.style.cursor = 'grabbing';
+    });
+    col.addEventListener('wheel', e => { e.preventDefault(); col.scrollTop += e.deltaY; }, {passive:false});
+    return col;
+  }
+
+  function _initDrumScrollPositions(containerId) {
+    const c = document.getElementById(containerId);
+    if (!c) return;
+    c.querySelectorAll('.sh-drum-col').forEach(col => { if (col._jumpTo !== undefined) col.scrollTop = col._jumpTo * ITEM_H; });
+  }
+
+  function _isoFor(side) {
+    const s = _drumState[side];
+    const day = Math.min(s.day, _daysInMonth(s.year, s.month));
+    return `${s.year}-${String(s.month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+  }
+
+  /* Called on every drum movement. Updates the draft and the preview label
+     ONLY — no filtering, no re-render. */
+  function _updateDraft() {
+    _draftFrom = _isoFor('from');
+    _draftTo   = _isoFor('to');
+    const swapped = _draftFrom > _draftTo;
+    const draftEl = document.getElementById('sh-range-draft');
+    if (draftEl) draftEl.textContent = `${fmtDate(_draftFrom)} → ${fmtDate(_draftTo)}`;
+    const hint  = document.getElementById('sh-range-hint');
+    const apply = document.getElementById('sh-range-apply-btn');
+    const dirty = _draftFrom !== _fromDate || _draftTo !== _toDate;
+    if (hint) {
+      hint.textContent = swapped ? '“From” is after “To” — swap them to apply.'
+                        : dirty  ? 'Not applied yet — press Apply.'
+                                 : 'Matches the range in force.';
+      hint.classList.toggle('dirty', swapped || dirty);
+    }
+    if (apply) apply.disabled = swapped;
+  }
+
+  function _syncDrumsToRange() {
+    _draftFrom = _fromDate; _draftTo = _toDate;
+    _buildDrumSet('drum-from', _fromDate, 'from');
+    _buildDrumSet('drum-to',   _toDate,   'to');
+    _updateDraft();
+    requestAnimationFrame(() => {
+      _initDrumScrollPositions('drum-from');
+      _initDrumScrollPositions('drum-to');
+    });
+  }
+
+  /* Leap-year aware. Guards against the day column offering 31 Feb. */
+  function _daysInMonth(y, m) { return new Date(y, m, 0).getDate(); }
+
+  /* Grey out and disable days the selected month doesn't have, and pull the
+     selection back if it's now sitting on one of them. */
+  function _refreshDayLimits(side) {
+    const col = _drumCols[side]?.day;
+    if (!col) return;
+    const max = _daysInMonth(_drumState[side].year, _drumState[side].month);
+    col._items.forEach((el, i) => el.classList.toggle('invalid', i + 1 > max));
+    col._maxIdx = max - 1;
+    if (col._currentIdx > max - 1) col.scrollTo({ top: (max - 1) * ITEM_H, behavior: 'smooth' });
+  }
+
+  function exportData() {
+    const payload = { ..._data, exportedAt: new Date().toISOString(), transactions: getFiltered() };
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(payload,null,2)], {type:'application/json'}));
+    a.download = `taxflow-${new Date().getFullYear()}.json`; a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  return { init, nav, toggleRange, applyRange, cancelRange, getFiltered,
+           applyPreset, exportData, loadData };
+})();
+
+/* ============================================================
+   DASHBOARD MODULE — five rendering sub-modules
+   ============================================================ */
+const Dashboard = {
+  mount() {
+    const data = AppState.committedData;
+    if (!data || !data.transactions || !data.transactions.length) {
+      this.showEmpty();
+      return;
+    }
+    document.getElementById('db-no-data').style.display = 'none';
+    const shell = document.getElementById('db-shell');
+    shell.style.display = 'flex';
+    Shell.loadData(data);
+    App.badgeDone('dashboard');
+  },
+  showEmpty() {
+    document.getElementById('db-no-data').style.display = 'flex';
+    const shell = document.getElementById('db-shell');
+    if (shell) shell.style.display = 'none';
+  }
+};
+
+/* ── helpers shared across sub-modules ── */
+function _catMap(txns) {
+  const m = {};
+  txns.forEach(t => {
+    if (!m[t.category]) m[t.category] = [];
+    m[t.category].push(t);
+  });
+  return m;
+}
+function _sortedCats(catMap) {
+  return Object.entries(catMap).sort((a,b) =>
+    b[1].reduce((s,t)=>s+Math.abs(t.amount),0) - a[1].reduce((s,t)=>s+Math.abs(t.amount),0));
+}
+
+/* ──────────────────────────────────────────────────────────────
+   OVERVIEW
+   ────────────────────────────────────────────────────────────── */
+Dashboard.Overview = (() => {
+  function render() {
+    const all     = Shell.getFiltered();
+    const txns    = operatingOnly(all);          // KPIs are OPERATING ONLY
+    const income  = sumPos(txns);
+    const expense = sumNeg(txns);
+    const net     = income + expense;
+    const expCats = _sortedCats(_catMap(txns.filter(t=>t.amount<0))).slice(0,6);
+    const totalExp = Math.abs(expense);
+
+    const topCat  = expCats[0];
+    const insight = topCat
+      ? `Biggest outflow: <strong>${topCat[0]}</strong> — ${fmtZAR(topCat[1].reduce((s,t)=>s+Math.abs(t.amount),0))}, ${Math.round(topCat[1].reduce((s,t)=>s+Math.abs(t.amount),0)/totalExp*100)}% of total outflows.`
+      : 'No expense data for this period.';
+
+    /* Mini monthly chart data */
+    const months = {};
+    txns.forEach(t => {
+      const ym = t.post_date.slice(0,7);
+      if (!months[ym]) months[ym] = {inc:0,exp:0};
+      if (t.amount>0) months[ym].inc += t.amount;
+      else months[ym].exp += Math.abs(t.amount);
+    });
+    const mKeys = Object.keys(months).sort().slice(-12);
+    const maxV  = Math.max(...mKeys.map(k=>Math.max(months[k].inc,months[k].exp)),1);
+    const BAR_H = 80;
+
+    /* SVG donut */
+    const donutCats = _sortedCats(_catMap(txns.filter(t=>t.amount<0))).slice(0,10);
+    const donutTotal = donutCats.reduce((s,[,ts])=>s+ts.reduce((a,t)=>a+Math.abs(t.amount),0),0);
+    let   donutSvg = '';
+    const R=60, CX=75, CY=75, SW=22;
+    let   startAngle = -Math.PI/2;
+    donutCats.forEach(([cat,ts]) => {
+      const amt = ts.reduce((s,t)=>s+Math.abs(t.amount),0);
+      const pct = amt/donutTotal;
+      const angle = pct * Math.PI * 2;
+      const endA  = startAngle + angle;
+      const x1=CX+R*Math.cos(startAngle), y1=CY+R*Math.sin(startAngle);
+      const x2=CX+R*Math.cos(endA),       y2=CY+R*Math.sin(endA);
+      const large = angle > Math.PI ? 1 : 0;
+      donutSvg += `<path class="db-donut-slice" d="M ${CX} ${CY} L ${x1} ${y1} A ${R} ${R} 0 ${large} 1 ${x2} ${y2} Z"
+        fill="${catColour(cat)}" data-nav="spending">
+        <title>${cat}: ${fmtZAR(amt)}</title></path>`;
+      startAngle = endA;
+    });
+    // Donut hole
+    donutSvg += `<circle cx="${CX}" cy="${CY}" r="${R-SW}" fill="var(--db-surface)"/>
+      <text x="${CX}" y="${CY-8}" text-anchor="middle" font-size="13" fill="var(--db-text-3)" font-family="var(--db-font)">OUTFLOWS</text>
+      <text x="${CX}" y="${CY+12}" text-anchor="middle" font-size="13" fill="var(--db-text-1)" font-weight="700" font-family="var(--db-mono)">${fmtZAR(totalExp).replace('R ','R')}</text>`;
+
+    const el = document.getElementById('overview-content');
+    el.innerHTML = `
+      <!-- KPI strip — OPERATING ONLY -->
+      <div class="db-kpi-strip">
+        <div class="db-card db-kpi-card net" data-nav="ledger">
+          <div class="db-kpi-eyebrow">Operating Result</div>
+          <div class="db-kpi-value ${net>=0?'accent':'income'}" style="${net<0?'color:var(--db-expense)':''}">${fmtZAR(net)}</div>
+          <div class="db-kpi-sub">${net<0?'Monthly burn funded by capital':'Earned income less overheads'}</div>
+        </div>
+        <div class="db-card db-kpi-card income" data-nav="income">
+          <div class="db-kpi-eyebrow">Operating Income</div>
+          <div class="db-kpi-value income">${fmtZAR(income)}</div>
+          <div class="db-kpi-sub">All credits in period</div>
+        </div>
+        <div class="db-card db-kpi-card expense" data-nav="spending">
+          <div class="db-kpi-eyebrow">Operating Outflows</div>
+          <div class="db-kpi-value expense">${fmtZAR(Math.abs(expense))}</div>
+          <div class="db-kpi-sub">View spending breakdown →</div>
+        </div>
+        <div class="db-card db-kpi-card neutral" data-nav="ledger">
+          <div class="db-kpi-eyebrow">Transactions</div>
+          <div class="db-kpi-value warning">${all.length.toLocaleString()}</div>
+          <div class="db-kpi-sub">${txns.length.toLocaleString()} operating · view ledger →</div>
+        </div>
+      </div>
+
+      <!-- Charts row -->
+      <div class="db-overview-charts">
+        <!-- Donut -->
+        <div class="db-card db-donut-wrap">
+          <div class="db-section-title">Spending by Category</div>
+          <div class="db-donut-svg-wrap">
+            <svg width="150" height="150" style="flex-shrink:0">${donutSvg}</svg>
+            <div class="db-donut-legend">
+              ${donutCats.map(([cat,ts]) => {
+                const amt = ts.reduce((s,t)=>s+Math.abs(t.amount),0);
+                return `<div class="db-donut-legend-item" data-nav="spending">
+                  <div class="db-donut-legend-dot" style="background:${catColour(cat)}"></div>
+                  <div class="db-donut-legend-name" title="${cat}">${cat}</div>
+                  <div class="db-donut-legend-val">${fmtZAR(amt)}</div>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>
+        </div>
+
+        <!-- Mini monthly -->
+        <div class="db-card db-mini-chart-wrap">
+          <div class="db-section-title">Monthly Cash Flow</div>
+          <div class="db-mini-bars">
+            ${mKeys.map(k => {
+              const incH  = Math.round((months[k].inc/maxV)*BAR_H);
+              const expH  = Math.round((months[k].exp/maxV)*BAR_H);
+              return `<div style="display:flex;flex-direction:column;align-items:center;flex:1;gap:2px">
+                <div class="db-mini-bar-group" style="height:${BAR_H}px">
+                  <div class="db-mini-bar" style="height:${incH}px;background:var(--db-income);opacity:.85" title="${fmtMonth(k+'-01')}: Income ${fmtZAR(months[k].inc)}" data-nav="monthly"></div>
+                  <div class="db-mini-bar" style="height:${expH}px;background:var(--db-expense);opacity:.85" title="${fmtMonth(k+'-01')}: Expenses ${fmtZAR(months[k].exp)}" data-nav="monthly"></div>
+                </div>
+                <div class="db-mini-label">${k.slice(5)}</div>
+              </div>`;
+            }).join('')}
+          </div>
+          <div style="display:flex;gap:14px;margin-top:10px;font-size:13px;color:var(--db-text-3)">
+            <span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:4px;background:var(--db-income);border-radius:2px;display:inline-block"></span>Income</span>
+            <span style="display:flex;align-items:center;gap:5px"><span style="width:8px;height:4px;background:var(--db-expense);border-radius:2px;display:inline-block"></span>Expenses</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Insight -->
+      <div class="db-insight" style="margin-bottom:14px">
+        <span style="font-size:16px;flex-shrink:0">💡</span>
+        <span>${insight}</span>
+      </div>
+
+      <!-- Top cats + sources row -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+        <div class="db-card db-top-cats">
+          <div class="db-section-title">Top Outflow Categories</div>
+          ${expCats.map(([cat,ts]) => {
+            const amt = ts.reduce((s,t)=>s+Math.abs(t.amount),0);
+            const pct = totalExp>0 ? Math.round(amt/totalExp*100) : 0;
+            return `<div class="db-top-cat-row" data-nav="spending">
+              <div class="db-cat-dot" style="background:${catColour(cat)}"></div>
+              <div class="db-cat-name">${cat}</div>
+              <div class="db-cat-bar-wrap"><div class="db-cat-bar-fill" style="width:${pct}%;background:${catColour(cat)}"></div></div>
+              <div class="db-cat-amount">${fmtZAR(amt)}</div>
+            </div>`;
+          }).join('')}
+        </div>
+        <div class="db-card" style="padding:18px">
+          <div class="db-section-title">Sources</div>
+          ${[...new Set(Shell.getFiltered().map(t=>t.source_file||t.source||'Unknown'))].map(f => `
+            <div class="db-files-row">
+              <span style="font-size:15px">${f.includes('synthetic')||f.includes('trading')?'📈':'📄'}</span>
+              <span class="db-file-name">${f}</span>
+              <span class="db-file-meta">${Shell.getFiltered().filter(t=>(t.source_file||t.source||'Unknown')===f).length}</span>
+            </div>`).join('')}
+        </div>
+      </div>`;
+  }
+  return { render };
+})();
+
+/* ──────────────────────────────────────────────────────────────
+   SPENDING  (outflows only)
+   ────────────────────────────────────────────────────────────── */
+Dashboard.Spending = (() => {
+  function render() { _renderFlow('spending-content', 'expense'); }
+  function toggle(row) { row.classList.toggle('expanded'); }
+  return { render, toggle };
+})();
+
+/* ──────────────────────────────────────────────────────────────
+   INCOME  (credits only)
+   ────────────────────────────────────────────────────────────── */
+Dashboard.Income = (() => {
+  function render() { _renderFlow('income-content', 'income'); }
+  function toggle(row) { row.classList.toggle('expanded'); }
+  return { render, toggle };
+})();
+
+/* Shared renderer for Spending + Income tabs */
+function _renderFlow(elId, mode) {
+  const all      = Shell.getFiltered();
+  const txns     = operatingOnly(all);
+  const subset   = mode === 'expense'
+    ? txns.filter(t => t.amount < 0)
+    : txns.filter(t => t.amount > 0);
+  const totalAbs = subset.reduce((s,t) => s + Math.abs(t.amount), 0);
+  const cats     = _sortedCats(_catMap(subset));
+  const colour   = mode === 'expense' ? 'var(--db-expense)' : 'var(--db-income)';
+  const label    = mode === 'expense' ? 'Outflows' : 'Income';
+
+  /* Show exactly what was held back, so the number is never a mystery. */
+  const heldBack = all.filter(t => !isOperating(t) && (mode === 'expense' ? t.amount < 0 : t.amount > 0));
+  const heldCats = _sortedCats(_catMap(heldBack));
+  const heldTotal = heldBack.reduce((s,t) => s + Math.abs(t.amount), 0);
+  const note = heldBack.length
+    ? `<div class="db-note">
+         <strong>Operating ${label.toLowerCase()} only.</strong>
+         ${fmtZAR(heldTotal)} across ${heldBack.length} transaction${heldBack.length!==1?'s':''} is excluded here because it is
+         capital movement or broker-statement trading, not ${mode === 'expense' ? 'an overhead' : 'earned income'}:
+         ${heldCats.map(([c,ts]) => `${c} ${fmtZAR(ts.reduce((s,t)=>s+Math.abs(t.amount),0))}`).join(' · ')}.
+         See the <strong>Trading</strong> tab.
+       </div>`
+    : '';
+
+  document.getElementById(elId).innerHTML = note + `
+    <div class="db-flow-summary" style="margin-bottom:14px">
+      <div class="db-card db-flow-stat">
+        <div class="db-flow-stat-label">Operating ${label}</div>
+        <div class="db-flow-stat-value" style="color:${colour}">${fmtZAR(totalAbs)}</div>
+      </div>
+      <div class="db-card db-flow-stat">
+        <div class="db-flow-stat-label">Categories</div>
+        <div class="db-flow-stat-value" style="color:var(--db-text-1)">${cats.length}</div>
+      </div>
+      <div class="db-card db-flow-stat">
+        <div class="db-flow-stat-label">Transactions</div>
+        <div class="db-flow-stat-value" style="color:var(--db-text-1)">${subset.length}</div>
+      </div>
+    </div>
+    <div class="db-card db-cat-chart">
+      <div class="db-section-title">All Operating ${label} Categories</div>
+      ${cats.map(([cat,ts]) => {
+        const amt = ts.reduce((s,t)=>s+Math.abs(t.amount),0);
+        const pct = totalAbs > 0 ? Math.round(amt/totalAbs*100) : 0;
+        const sorted = [...ts].sort((a,b)=>b.post_date.localeCompare(a.post_date));
+        return `<div class="db-chart-row">
+          <div class="db-chart-row-header">
+            <div class="db-chart-row-name" title="${cat}">
+              <span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${catColour(cat)};margin-right:7px;vertical-align:middle"></span>${cat}
+            </div>
+            <div class="db-chart-bar-track">
+              <div class="db-chart-bar-fill" style="width:${pct}%;background:${catColour(cat)}"></div>
+            </div>
+            <div class="db-chart-row-amount">${fmtZAR(amt)}</div>
+            <div class="db-chart-row-pct">${pct}%</div>
+            <span class="db-chart-expand-icon">›</span>
+          </div>
+          <div class="db-txn-list">
+            ${sorted.map(t => `<div class="db-txn-row">
+              <div class="db-txn-date">${fmtDate(t.post_date)}</div>
+              <div class="db-txn-ref" title="${t.reference}">${t.reference}</div>
+              <div class="db-txn-amount ${t.amount<0?'neg':'pos'}">${fmtZAR(t.amount)}</div>
+            </div>`).join('')}
+          </div>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+/* ──────────────────────────────────────────────────────────────
+   MONTHLY
+   ────────────────────────────────────────────────────────────── */
+Dashboard.Monthly = (() => {
+  let _expandedMonth = null;
+
+  function render() {
+    const txns = operatingOnly(Shell.getFiltered());   // trading & capital excluded
+    const months = {};
+    txns.forEach(t => {
+      const ym = t.post_date.slice(0,7);
+      if (!months[ym]) months[ym] = {income:0,expense:0,txns:[]};
+      if (t.amount>0) months[ym].income += t.amount;
+      else months[ym].expense += Math.abs(t.amount);
+      months[ym].txns.push(t);
+    });
+    const keys   = Object.keys(months).sort();
+    const maxVal = Math.max(...keys.map(k=>Math.max(months[k].income,months[k].expense)),1);
+    const BAR_W=20, GAP=4, GROUP_W=BAR_W*2+GAP+14, H=200, PAD_L=60, PAD_T=16, PAD_B=34, PAD_R=16;
+    const chartW = keys.length*GROUP_W + PAD_L + PAD_R;
+    const innerH  = H - PAD_T - PAD_B;
+
+    let runBal=0;
+    const balByMonth={};
+    keys.forEach(k => { runBal+=months[k].income-months[k].expense; balByMonth[k]=runBal; });
+    const minBal=Math.min(...Object.values(balByMonth));
+    const maxBal=Math.max(...Object.values(balByMonth));
+    const balRange=maxBal-minBal||1;
+
+    const yTicks=4;
+    let yAxis='';
+    for (let i=0;i<=yTicks;i++) {
+      const val=(maxVal/yTicks)*(yTicks-i);
+      const y=PAD_T+(i/yTicks)*innerH;
+      yAxis += `<line x1="${PAD_L-4}" y1="${y}" x2="${chartW-PAD_R}" y2="${y}" stroke="rgba(255,255,255,.06)" stroke-width="1"/>
+        <text x="${PAD_L-8}" y="${y+4}" text-anchor="end" font-size="13" fill="var(--db-text-3)" font-family="var(--db-mono)">R${val>=1000?(val/1000).toFixed(0)+'k':val.toFixed(0)}</text>`;
+    }
+
+    let bars='', linePoints='';
+    keys.forEach((k,i) => {
+      const x=PAD_L+i*GROUP_W;
+      const {income,expense}=months[k];
+      const incH=(income/maxVal)*innerH, expH=(expense/maxVal)*innerH;
+      const cx=x+BAR_W+GAP/2;
+      const balFrac=(balByMonth[k]-minBal)/balRange;
+      const balY=PAD_T+innerH-balFrac*innerH*0.7-innerH*0.1;
+      linePoints+=`${cx},${balY} `;
+      bars+=`<g class="db-month-bar-group" style="cursor:pointer" data-month="${k}" data-income="${income}" data-expense="${expense}">
+        <rect x="${x}" y="${PAD_T+innerH-incH}" width="${BAR_W}" height="${incH}" fill="#00E5A0" rx="2" opacity=".85"/>
+        <rect x="${x+BAR_W+GAP}" y="${PAD_T+innerH-expH}" width="${BAR_W}" height="${expH}" fill="#FF4D6A" rx="2" opacity=".85"/>
+        <rect x="${x-4}" y="${PAD_T}" width="${GROUP_W}" height="${innerH}" fill="transparent"/>
+        <text x="${x+BAR_W}" y="${PAD_T+innerH+20}" text-anchor="middle" font-size="13" fill="var(--db-text-3)" font-family="var(--db-font)">${fmtMonth(k+'-01').slice(0,3)} ${k.slice(2,4)}</text>
+      </g>`;
+    });
+
+    const pts = linePoints.trim().split(' ').filter(Boolean);
+    let poly='';
+    if (pts.length>1) {
+      poly=`<polyline points="${linePoints.trim()}" fill="none" stroke="#6C63FF" stroke-width="2" stroke-dasharray="4 3" opacity=".8"/>`;
+      pts.forEach(pt=>{ const [px,py]=pt.split(','); poly+=`<circle cx="${px}" cy="${py}" r="3" fill="#6C63FF" opacity=".9"/>`; });
+    }
+
+    const el = document.getElementById('monthly-content');
+    el.innerHTML = `
+      <div class="db-note">
+        <strong>Monthly cash flow.</strong> Click any month bar to see its category breakdown.
+      </div>
+      <div class="db-card db-monthly-chart-wrap">
+        <div class="db-monthly-legend">
+          <div class="db-legend-item"><div class="db-legend-dot" style="background:var(--db-income)"></div>Operating income</div>
+          <div class="db-legend-item"><div class="db-legend-dot" style="background:var(--db-expense)"></div>Overheads</div>
+          <div class="db-legend-item"><div class="db-legend-dot" style="background:var(--db-accent)"></div>Running balance</div>
+        </div>
+        <div class="db-monthly-svg-wrap">
+          <svg width="${chartW}" height="${H}" style="display:block">
+            ${yAxis}${bars}${poly}
+          </svg>
+        </div>
+        <div style="font-size:13px;color:var(--db-text-3);text-align:center;margin-top:8px">Click any month to see its category breakdown</div>
+      </div>
+      <div class="db-month-detail" id="month-detail">
+        <div class="db-month-detail-title">
+          <span id="month-detail-title">—</span>
+          <button class="db-month-close" id="db-month-close-btn">×</button>
+        </div>
+        <div class="db-month-cats" id="month-detail-cats"></div>
+      </div>`;
+    if (_expandedMonth) expandMonth(_expandedMonth);
+  }
+
+  function showTip(e, month, income, expense) {
+    const tip = document.getElementById('monthly-tooltip');
+    tip.style.display='block';
+    tip.innerHTML=`<strong>${fmtMonth(month+'-01')}</strong><br>↑ ${fmtZAR(income)}<br>↓ ${fmtZAR(expense)}<br>Net ${fmtZAR(income-expense)}`;
+    tip.style.left=(e.clientX+14)+'px'; tip.style.top=(e.clientY-10)+'px';
+  }
+  function hideTip() { document.getElementById('monthly-tooltip').style.display='none'; }
+
+  function expandMonth(ym) {
+    _expandedMonth=ym;
+    const txns=operatingOnly(Shell.getFiltered()).filter(t=>t.post_date.startsWith(ym));
+    const cats=_sortedCats(_catMap(txns.filter(t=>t.amount<0)));
+    document.getElementById('month-detail-title').textContent=`${fmtMonth(ym+'-01')} — Breakdown`;
+    document.getElementById('month-detail-cats').innerHTML=cats.map(([cat,ts])=>{
+      const amt=ts.reduce((s,t)=>s+Math.abs(t.amount),0);
+      return `<div class="db-month-cat-chip">
+        <span class="db-month-cat-name"><span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:${catColour(cat)};margin-right:5px;vertical-align:middle"></span>${cat}</span>
+        <span class="db-month-cat-val" style="color:var(--db-expense)">${fmtZAR(amt)}</span>
+      </div>`;
+    }).join('');
+    document.getElementById('month-detail').classList.add('open');
+  }
+  function closeDetail() { _expandedMonth=null; document.getElementById('month-detail').classList.remove('open'); }
+
+  return { render, showTip, hideTip, expandMonth, closeDetail };
+})();
+
+/* ──────────────────────────────────────────────────────────────
+   LEDGER
+   ────────────────────────────────────────────────────────────── */
+Dashboard.Ledger = (() => {
+  /* No pagination. The ledger shows every transaction in the selected range
+     as one continuous scroll — .sh-view is already overflow-y:auto. Paging
+     also had a latent bug: _page was reset by search and category filters but
+     NOT by a date-range change, so narrowing the range while on a later page
+     showed "No transactions match" alongside "Page 7 / 1". */
+  let _search='', _catFilter='', _sortCol='post_date', _sortAsc=false;
+
+  function render() {
+    const el   = document.getElementById('ledger-content');
+    const txns = Shell.getFiltered();
+    const cats = [...new Set(txns.map(t=>t.category))].sort();
+    el.innerHTML=`
+      <div class="db-ledger-toolbar">
+        <div class="db-search-wrap">
+          <svg width="13" height="13" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M8 4a4 4 0 100 8 4 4 0 000-8zM2 8a6 6 0 1110.89 3.476l4.817 4.817a1 1 0 01-1.414 1.414l-4.816-4.816A6 6 0 012 8z"/></svg>
+          <input class="db-search" id="ledger-search-input" type="text" placeholder="Search references…" value="${_search}">
+        </div>
+        <select class="db-filter-select" id="ledger-cat-filter">
+          <option value="">All categories</option>
+          ${cats.map(c=>`<option value="${c}" ${_catFilter===c?'selected':''}>${c}</option>`).join('')}
+        </select>
+        <button class="btn btn-ghost btn-sm" id="ledger-export-csv-btn">Export CSV</button>
+        <button class="btn btn-ghost btn-sm" id="ledger-export-categorise-btn" title="Export every committed transaction with a suggested-category column, for bulk editing in Excel or by an AI">⇩ Categorise in Excel</button>
+        <button class="btn btn-ghost btn-sm" id="ledger-import-btn" title="Re-import a categorised CSV — matches rows by id, skips locked trading entries">⇧ Import categorised</button>
+        <input type="file" id="ledger-import-input" accept=".csv,.xlsx" style="display:none">
+      </div>
+      <div id="ledger-table-wrap"></div>`;
+    _renderTable();
+    // A new range means a different list — start at the top of it rather than
+    // wherever the previous, longer list happened to be scrolled to.
+    const view = document.getElementById('view-ledger');
+    if (view) view.scrollTop = 0;
+  }
+
+  function _getFiltered() {
+    let txns=Shell.getFiltered();
+    if (_search)    txns=txns.filter(t=>t.reference.toLowerCase().includes(_search.toLowerCase()));
+    if (_catFilter) txns=txns.filter(t=>t.category===_catFilter);
+    return txns.sort((a,b)=>{
+      const va=a[_sortCol], vb=b[_sortCol];
+      if (typeof va==='string') return _sortAsc?va.localeCompare(vb):vb.localeCompare(va);
+      return _sortAsc?va-vb:vb-va;
+    });
+  }
+
+  function _renderTable() {
+    const all=_getFiltered();
+    const page=all;
+    const cols=[{key:'post_date',label:'Date'},{key:'reference',label:'Reference'},{key:'category',label:'Category'},{key:'amount',label:'Amount'},{key:'balance',label:'Balance'}];
+    const wrap=document.getElementById('ledger-table-wrap');
+    if (!wrap) return;
+    wrap.innerHTML=`
+      <div class="db-ledger-wrap">
+        <table class="db-ledger-table">
+          <thead><tr>${cols.map(c=>`<th data-sort-col="${c.key}">${c.label}<span class="db-sort-arrow ${_sortCol===c.key?'active':''}">${_sortCol===c.key?(_sortAsc?'↑':'↓'):'↕'}</span></th>`).join('')}</tr></thead>
+          <tbody>
+            ${page.map(t=>`<tr>
+              <td class="db-ledger-td-date">${fmtDate(t.post_date)}</td>
+              <td class="db-ledger-td-ref" title="${t.reference}">${t.reference}</td>
+              <td><span class="db-badge ${t.locked?'locked':''}"
+                data-txnid="${String(t.id)}"
+                style="border-left:3px solid ${catColour(t.category)}">${t.category}${t.locked?' 🔒':''}</span></td>
+              <td class="db-ledger-td-amount ${t.amount<0?'neg':'pos'}">${fmtZAR(t.amount)}</td>
+              <td class="db-ledger-td-bal">${t.balance?fmtZAR(t.balance):'—'}</td>
+            </tr>`).join('')}
+            ${!page.length?`<tr><td colspan="5" style="text-align:center;padding:32px;color:var(--db-text-3)">No transactions match.</td></tr>`:''}
+          </tbody>
+        </table>
+        <div class="db-ledger-footer">
+          <span>${all.length.toLocaleString()} transaction${all.length!==1?'s':''}${_search||_catFilter?' matching':''} · showing all</span>
+          <span>${fmtZAR(sumAmt(all), true)} net</span>
+        </div>
+      </div>`;
+  }
+
+  function setSearch(v) { _search=v; _renderTable(); }
+  function setCat(v)    { _catFilter=v; _renderTable(); }
+  function editCat(e) {
+    CategoryPicker.open(e, {
+      getData:  () => AppState.committedData.transactions,
+      theme:    'dark',
+      onChange: () => { Store.save(); _renderTable(); }
+    });
+  }
+  function sort(col)    { _sortCol===col?(_sortAsc=!_sortAsc):(_sortCol=col,_sortAsc=false); _renderTable(); }
+  function exportCSV() {
+    const txns=_getFiltered();
+    const csv=['Date,Reference,Category,Amount,Balance,Source',
+      ...txns.map(t=>[t.post_date,`"${t.reference}"`,`"${t.category}"`,t.amount,t.balance||'',t.source_file||''].join(','))
+    ].join('\n');
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+    a.download='taxflow-ledger.csv'; a.click();
+  }
+
+  function exportForCategorise() {
+    BulkCategorize.exportXLSX(AppState.committedData.transactions, 'taxflow-ledger-categorise.xlsx').catch(err => alert('Export failed: ' + err.message));
+  }
+
+  function importCategorised(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const importer = /\.xlsx$/i.test(file.name) ? BulkCategorize.importXLSX : BulkCategorize.importCSV;
+    importer(file, {
+      getData: () => AppState.committedData.transactions,
+      onApplied: (applied, total, meta) => {
+        Store.save();
+        _renderTable();
+        let msg = `Updated ${applied} of ${total} rows.`;
+        if (meta.skippedLocked) msg += ` ${meta.skippedLocked} locked trading entries were left untouched.`;
+        if (meta.notFound)      msg += ` ${meta.notFound} rows didn't match any transaction (edited or deleted since export?).`;
+        if (meta.ambiguous)     msg += ` ${meta.ambiguous} rows matched more than one transaction and were skipped.`;
+        alert(msg);
+      }
+    });
+    input.value = '';
+  }
+
+  return { render, setSearch, setCat, editCat, sort, exportCSV, exportForCategorise, importCategorised };
+})();
+
+/* ============================================================
+   BOOT
+   ============================================================ */
+
+
+/* ============================================================
+   REVIEW MODULE — category editing, commit to Dashboard
+   ============================================================ */
+/* ============================================================
+   CATEGORY PICKER — shared inline dropdown for reassigning a
+   transaction's category. Used by both the Review tab and the
+   Dashboard Ledger. Fuzzy-matches similar references and asks
+   before applying a change to the whole batch.
+   ============================================================ */
+const CategoryPicker = (() => {
+  let _activePicker = null;
+  let _openTxnId     = null;
+  let _openOpts      = null;   // { getData, onChange, theme } — single-row mode
+  let _bulkOpts      = null;   // { ids, getData, onChange, theme } — bulk mode
+
+  // Fuzzy reference match: normalise and check if one string contains the other
+  function refSimilar(a, b) {
+    const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const na = norm(a), nb = norm(b);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+    const shorter = na.length <= nb.length ? na : nb;
+    const longer  = na.length <= nb.length ? nb : na;
+    return shorter.length >= 4 && longer.includes(shorter);
+  }
+
+  function allCats() {
+    return [...new Set([...Object.keys(CAT_COLOURS), ...AppState.customCategories])].sort();
+  }
+
+  // opts: { getData(): Txn[], onChange(): void, theme?: 'dark' }
+  function open(e, opts) {
+    // Delegated listeners hand us the bubbled event from anywhere inside the
+    // badge, so resolve the actual badge element via closest() rather than
+    // relying on currentTarget (which only works for a listener bound
+    // directly on the badge itself).
+    const badge = e.target.closest('[data-txnid]');
+    if (!badge) return;
+    e.stopPropagation();
+    const txnId = badge.dataset.txnid;
+    if (!txnId) return;
+
+    // If picker already open for this badge — close it (toggle)
+    if (_activePicker && _openTxnId === txnId) { close(); return; }
+
+    close();
+    _openTxnId = txnId;
+    _openOpts  = opts;
+    _openOnBadge(badge);
+  }
+
+  function _openOnBadge(badge) {
+    const txnId = badge.dataset.txnid;
+    const data  = _openOpts.getData();
+    const txn   = data.find(t => String(t.id) === txnId);
+    if (!txn) {
+      alert(`Cannot edit this row — no transaction found with id "${txnId}". The row may be from an older session export that predates stable ids.`);
+      _openTxnId = null;
+      return;
+    }
+    if (txn.locked) { _openTxnId = null; return; }
+
+    const dark     = _openOpts.theme === 'dark';
+    const cats     = allCats();
+    const rect     = badge.getBoundingClientRect();
+
+    // Position: flip upward if near bottom of viewport
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const pickerH     = Math.min(320, 40 + cats.length * 34);
+    const topStyle    = spaceBelow > pickerH
+      ? `top:${rect.bottom + 4}px`
+      : `bottom:${window.innerHeight - rect.top + 4}px`;
+
+    const picker = document.createElement('div');
+    picker.className = dark ? 'rv-cat-picker cp-dark' : 'rv-cat-picker';
+    picker.id         = 'cp-picker';
+    picker.style.cssText = `${topStyle};left:${Math.min(rect.left, window.innerWidth - 220)}px`;
+
+    // Header + search box are static markup (no user data interpolated).
+    picker.innerHTML = `
+      <input class="rv-cat-picker-search" id="cp-picker-search"
+             placeholder="Search categories…" autocomplete="off">
+      <div id="cp-picker-list"></div>`;
+
+    // Option rows are built as real DOM nodes and dispatched via event
+    // delegation. Category names are user data and must never be
+    // concatenated into an inline onclick — names containing an apostrophe
+    // (e.g. "Directors' & Members' Loans") produced a JS syntax error that
+    // made the click silently do nothing.
+    const list = picker.querySelector('#cp-picker-list');
+    cats.forEach(c => {
+      const opt = document.createElement('div');
+      opt.className = 'rv-cat-option' + (c === txn.category ? ' selected' : '');
+      opt.dataset.cat = c;
+
+      const dot = document.createElement('span');
+      dot.style.cssText = `width:8px;height:8px;border-radius:50%;background:${catColour(c)};display:inline-block;flex-shrink:0`;
+
+      const label = document.createElement('span');
+      label.style.flex = '1';
+      label.textContent = c;
+
+      opt.append(dot, label);
+      list.appendChild(opt);
+    });
+
+    const addNewOpt = document.createElement('div');
+    addNewOpt.className = 'rv-cat-option add-new';
+    addNewOpt.dataset.addNew = 'true';
+    addNewOpt.textContent = '+ Add new category';
+    list.appendChild(addNewOpt);
+
+    picker.querySelector('#cp-picker-search')
+      .addEventListener('input', (ev) => filterList(ev.target.value));
+
+    list.addEventListener('click', (ev) => {
+      const opt = ev.target.closest('.rv-cat-option');
+      if (!opt) return;
+      if (opt.dataset.addNew) addNew();
+      else if (opt.dataset.cat !== undefined) choose(opt.dataset.cat);
+    });
+
+    document.body.appendChild(picker);
+    _activePicker = picker;
+    document.getElementById('cp-picker-search')?.focus();
+
+    // Close on outside click — but not if the click is inside the picker
+    const onOutside = (evt) => {
+      if (!picker.contains(evt.target) && evt.target !== badge) {
+        close();
+        document.removeEventListener('mousedown', onOutside);
+      }
+    };
+    setTimeout(() => document.addEventListener('mousedown', onOutside), 0);
+    picker._onOutside = onOutside;
+  }
+
+  // Shared, injection-safe option-list builder used by bulk mode (kept
+  // separate from _openOnBadge's inline version so the already-verified
+  // single-row flow is never touched).
+  function _buildOptionList(cats, selectedCat, onChoose) {
+    const list = document.createElement('div');
+    cats.forEach(c => {
+      const opt = document.createElement('div');
+      opt.className = 'rv-cat-option' + (c === selectedCat ? ' selected' : '');
+      opt.dataset.cat = c;
+
+      const dot = document.createElement('span');
+      dot.style.cssText = `width:8px;height:8px;border-radius:50%;background:${catColour(c)};display:inline-block;flex-shrink:0`;
+
+      const label = document.createElement('span');
+      label.style.flex = '1';
+      label.textContent = c;
+
+      opt.append(dot, label);
+      list.appendChild(opt);
+    });
+
+    const addNewOpt = document.createElement('div');
+    addNewOpt.className = 'rv-cat-option add-new';
+    addNewOpt.dataset.addNew = 'true';
+    addNewOpt.textContent = '+ Add new category';
+    list.appendChild(addNewOpt);
+
+    list.addEventListener('click', (ev) => {
+      const opt = ev.target.closest('.rv-cat-option');
+      if (!opt) return;
+      if (opt.dataset.addNew) addNew();
+      else if (opt.dataset.cat !== undefined) onChoose(opt.dataset.cat);
+    });
+
+    return list;
+  }
+
+  // Bulk entry point: opens the same picker UI anchored to an arbitrary
+  // element (e.g. the "Categorise Selected" bar button) instead of a single
+  // row's badge, and skips the fuzzy-similar-row prompt entirely — the
+  // multi-select itself IS the confirmation.
+  // opts: { ids: string[], getData(): Txn[], onChange(applied:number): void, theme?: 'dark' }
+  function openBulk(anchorEl, opts) {
+    if (_activePicker && _bulkOpts) { close(); return; }
+    close();
+    _bulkOpts = opts;
+    _openOnAnchor(anchorEl, opts);
+  }
+
+  function _openOnAnchor(anchorEl, opts) {
+    const dark = opts.theme === 'dark';
+    const t    = dark ? 'db-' : '';
+    const cats = allCats();
+    const rect = anchorEl.getBoundingClientRect();
+
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const pickerH     = Math.min(320, 60 + cats.length * 34);
+    const topStyle    = spaceBelow > pickerH
+      ? `top:${rect.bottom + 4}px`
+      : `bottom:${window.innerHeight - rect.top + 4}px`;
+
+    const picker = document.createElement('div');
+    picker.className = dark ? 'rv-cat-picker cp-dark' : 'rv-cat-picker';
+    picker.id         = 'cp-picker';
+    picker.style.cssText = `${topStyle};left:${Math.min(rect.left, window.innerWidth - 220)}px`;
+
+    const n = opts.ids.length;
+    const headerHtml = `
+      <div style="padding:7px 12px 0;font-size:13px;color:var(--${t}text-3)">
+        <span style="color:var(--${t}accent);font-weight:700">${n}</span>
+        transaction${n !== 1 ? 's' : ''} selected — choose a category to apply to all.
+      </div>`;
+
+    picker.innerHTML = `
+      ${headerHtml}
+      <input class="rv-cat-picker-search" id="cp-picker-search"
+             placeholder="Search categories…" autocomplete="off">
+      <div id="cp-picker-list"></div>`;
+
+    const placeholder = picker.querySelector('#cp-picker-list');
+    const list = _buildOptionList(cats, null, (cat) => chooseBulk(cat));
+    list.id = 'cp-picker-list';
+    placeholder.replaceWith(list);
+
+    picker.querySelector('#cp-picker-search')
+      .addEventListener('input', (ev) => filterList(ev.target.value));
+
+    document.body.appendChild(picker);
+    _activePicker = picker;
+    document.getElementById('cp-picker-search')?.focus();
+
+    const onOutside = (evt) => {
+      if (!picker.contains(evt.target) && evt.target !== anchorEl) {
+        close();
+        document.removeEventListener('mousedown', onOutside);
+      }
+    };
+    setTimeout(() => document.addEventListener('mousedown', onOutside), 0);
+    picker._onOutside = onOutside;
+  }
+
+  // Applies newCat to every selected id (bulk mode) — no fuzzy-similar
+  // prompt, since the explicit multi-select is the confirmation.
+  function chooseBulk(newCat) {
+    if (!_bulkOpts) { close(); return; }
+    const { ids, getData, onChange } = _bulkOpts;
+    const data  = getData();
+    const idSet = new Set(ids.map(String));
+    let applied = 0;
+    data.forEach(t => {
+      if (!t.locked && idSet.has(String(t.id))) { t.category = newCat; applied++; }
+    });
+    close();
+    onChange?.(applied);
+  }
+
+  function filterList(query) {
+    const list = document.getElementById('cp-picker-list');
+    if (!list) return;
+    const q = query.toLowerCase().trim();
+    list.querySelectorAll('.rv-cat-option:not(.add-new)').forEach(el => {
+      el.style.display = !q || el.textContent.toLowerCase().includes(q) ? '' : 'none';
+    });
+  }
+
+  // Applies newCat to the open transaction; if similar transactions exist, asks first
+  function choose(newCat) {
+    if (!_openTxnId || !_openOpts) {
+      alert('Could not apply that category — the picker lost track of which transaction was open. Please try again.');
+      close();
+      return;
+    }
+    const data = _openOpts.getData();
+    const txn  = data.find(t => String(t.id) === String(_openTxnId));
+    if (!txn) {
+      alert(`Could not apply that category — transaction id "${_openTxnId}" was not found in the current dataset. This usually means the data was reloaded while the picker was open.`);
+      close();
+      return;
+    }
+
+    txn.category = newCat;
+
+    const onChange = _openOpts.onChange;
+    close();
+    onChange?.();
+  }
+
+  function addNew() {
+    const name = prompt('New category name:');
+    if (!name?.trim()) return;
+    const cat = name.trim();
+    if (!AppState.customCategories.includes(cat)) AppState.customCategories.push(cat);
+    if (_bulkOpts) chooseBulk(cat); else choose(cat);
+  }
+
+  function close() {
+    if (_activePicker) {
+      if (_activePicker._onOutside)
+        document.removeEventListener('mousedown', _activePicker._onOutside);
+      _activePicker.remove();
+      _activePicker = null;
+    }
+    _openTxnId = null;
+    _openOpts  = null;
+    _bulkOpts  = null;
+  }
+
+  return { open, openBulk, choose, addNew, filterList, close, refSimilar };
+})();
+
+
+/* ============================================================
+   BULK CATEGORIZE — CSV export/import for offline (or AI-
+   assisted) bulk categorisation of large transaction sets.
+   Round-trips by `id`; locked (trading) rows are exported for
+   visibility but are never modified on import.
+   ============================================================ */
+const BulkCategorize = (() => {
+  const HEADERS = ['id','post_date','reference','category','suggested_category','amount','source','locked'];
+
+  function _esc(v) {
+    v = v === null || v === undefined ? '' : String(v);
+    return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  }
+
+  function _parseCSV(text) {
+    const rows = [];
+    let row = [], field = '', inQuotes = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c === '"') { if (text[i+1] === '"') { field += '"'; i++; } else inQuotes = false; }
+        else field += c;
+      } else if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text[i+1] === '\n') i++;
+        row.push(field); field = '';
+        if (row.length > 1 || row[0] !== '') rows.push(row);
+        row = [];
+      } else field += c;
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    if (!rows.length) return [];
+    const headers = rows[0];
+    return rows.slice(1).map(r => {
+      const obj = {};
+      headers.forEach((h, idx) => obj[h] = r[idx] !== undefined ? r[idx] : '');
+      return obj;
+    });
+  }
+
+  // Best-guess category for an uncategorised row, based on what similar
+  // references have already been tagged as elsewhere in the same dataset.
+  // Picks the most common category among fuzzy-matching rows (majority vote).
+  function _suggest(data, txn) {
+    if (txn.category && txn.category !== 'Uncategorised') return '';
+    const tally = {};
+    data.forEach(t => {
+      if (t.id === txn.id || t.locked) return;
+      if (!t.category || t.category === 'Uncategorised') return;
+      if (!CategoryPicker.refSimilar(t.reference, txn.reference)) return;
+      tally[t.category] = (tally[t.category] || 0) + 1;
+    });
+    const best = Object.entries(tally).sort((a, b) => b[1] - a[1])[0];
+    return best ? best[0] : '';
+  }
+
+  function exportCSV(data, filename) {
+    if (!data || !data.length) { alert('Nothing to export.'); return; }
+    const lines = [HEADERS.join(',')];
+    data.forEach(t => {
+      lines.push([
+        _esc(t.id), _esc(t.post_date), _esc(t.reference), _esc(t.category),
+        _esc(_suggest(data, t)), _esc(t.amount), _esc(t.source || t.source_file || ''),
+        _esc(t.locked ? 'TRUE' : '')
+      ].join(','));
+    });
+    const blob = new Blob([lines.join('\r\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  // XLSX export with a real Excel dropdown (data validation) on the category
+  // column. Inline validation lists cap out at 255 chars, and our category
+  // list runs longer than that, so the valid values live on a hidden
+  // reference sheet and the dropdown points at that range instead.
+  async function exportXLSX(data, filename) {
+    if (!data || !data.length) { alert('Nothing to export.'); return; }
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Transactions');
+    ws.columns = [
+      { header: 'id',                  key: 'id',                  width: 18 },
+      { header: 'post_date',           key: 'post_date',           width: 12 },
+      { header: 'reference',           key: 'reference',           width: 50 },
+      { header: 'category',            key: 'category',            width: 24 },
+      { header: 'suggested_category',  key: 'suggested_category',  width: 24 },
+      { header: 'amount',              key: 'amount',               width: 12 },
+      { header: 'source',              key: 'source',               width: 26 },
+      { header: 'locked',              key: 'locked',                width: 8 },
+    ];
+    data.forEach(t => {
+      ws.addRow({
+        id: t.id, post_date: t.post_date, reference: t.reference,
+        category: t.category, suggested_category: _suggest(data, t),
+        amount: t.amount, source: t.source || t.source_file || '',
+        locked: t.locked ? 'TRUE' : ''
+      });
+    });
+    ws.getRow(1).font = { bold: true };
+
+    const cats = [...new Set([...Object.keys(CAT_COLOURS), ...AppState.customCategories])].sort();
+    const catsSheet = wb.addWorksheet('Categories');
+    catsSheet.state = 'hidden';
+    cats.forEach((c, i) => { catsSheet.getCell(`A${i + 1}`).value = c; });
+
+    const lastRow = data.length + 1;
+    for (let r = 2; r <= lastRow; r++) {
+      ws.getCell(`D${r}`).dataValidation = {
+        type: 'list',
+        allowBlank: true,
+        showErrorMessage: false,   // warn-but-allow — free text (new categories) still works
+        formulae: [`Categories!$A$1:$A$${cats.length}`],
+      };
+    }
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  // Tolerant amount parser — strips currency symbols/spaces and copes with
+  // either "," or "." as the decimal separator, since Excel will happily
+  // reformat a plain number into "R -100.00" or "-100,00" depending on the
+  // cell's number format and the machine's locale.
+  function _parseAmount(v) {
+    if (v === null || v === undefined || v === '') return 0;
+    let s = String(v).trim().replace(/[^0-9,.\-]/g, '');
+    if (s.includes(',') && s.includes('.')) {
+      s = s.replace(/,/g, '');                    // "1,234.56" — comma is a thousands separator
+    } else if (s.includes(',') && !s.includes('.')) {
+      const parts = s.split(',');
+      s = (parts.length === 2 && parts[1].length <= 2) ? parts.join('.') : parts.join('');
+    }
+    const n = Number(s);
+    return isNaN(n) ? 0 : n;
+  }
+
+  // Tolerant date parser — normalises to YYYY-MM-DD. Handles the ISO format
+  // the app writes natively, plus DD/MM/YYYY and YYYY/MM/DD, which is what
+  // Excel tends to reformat a date column into on save (SA locale = day
+  // first, so ambiguous DD/MM vs MM/DD is resolved in favour of DD/MM).
+  function _normDate(v) {
+    const s = String(v || '').trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+    let m = s.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+    if (m) {
+      let [, a, b, y] = m;
+      const aNum = Number(a), bNum = Number(b);
+      const day   = aNum > 12 ? a : b;
+      const month = aNum > 12 ? b : a;
+      return `${y}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+    }
+    m = s.match(/^(\d{4})[\/.-](\d{1,2})[\/.-](\d{1,2})$/);
+    if (m) {
+      const [, y, mo, d] = m;
+      return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
+    }
+    return s;
+  }
+
+  // Builds a normalised post_date|reference|amount key, used as a fallback
+  // match when a row has no usable id (e.g. plain CSV exports made before
+  // the id-bearing "Categorise in Excel" format existed, or a file that's
+  // been round-tripped through Excel and had its formatting mangled).
+  function _compositeKey(post_date, reference, amount) {
+    return `${_normDate(post_date)}|${String(reference || '').trim().toLowerCase()}|${_parseAmount(amount).toFixed(2)}`;
+  }
+
+  // Shared by importCSV and importXLSX once each has reduced its file to a
+  // plain array of row objects. Matches by id first, falls back to a
+  // date+reference+amount composite key for files that lack (or lost) ids.
+  // opts: { getData(): Txn[], onApplied(applied, total, meta): void }
+  function _applyRows(rows, opts) {
+    const data = opts.getData();
+    const byKey = new Map();
+    data.forEach(t => {
+      const k = _compositeKey(t.post_date, t.reference, t.amount);
+      (byKey.get(k) || byKey.set(k, []).get(k)).push(t);
+    });
+
+    let applied = 0, skippedLocked = 0, notFound = 0, ambiguous = 0;
+    rows.forEach(r => {
+      const id = r.id ?? r.ID ?? r.Id;
+      let txn = id ? data.find(t => String(t.id) === String(id)) : null;
+      if (!txn) {
+        const postDate  = r.post_date ?? r.Date ?? r.date;
+        const reference = r.reference ?? r.Reference;
+        const amount    = r.amount ?? r.Amount;
+        const candidates = byKey.get(_compositeKey(postDate, reference, amount));
+        if (candidates && candidates.length === 1) txn = candidates[0];
+        else if (candidates && candidates.length > 1) { ambiguous++; return; }
+      }
+      if (!txn) { notFound++; return; }
+      if (txn.locked) { skippedLocked++; return; }
+      const newCat = String(r.category ?? r.Category ?? '').trim();
+      if (newCat && newCat !== txn.category) { txn.category = newCat; applied++; }
+    });
+    opts.onApplied(applied, rows.length, { skippedLocked, notFound, ambiguous });
+  }
+
+  function importCSV(file, opts) {
+    file.text().then(text => {
+      const rows = _parseCSV(text);
+      if (!rows.length) { alert("That file has no rows to import."); return; }
+      _applyRows(rows, opts);
+    }).catch(err => alert('Could not read that file: ' + err.message));
+  }
+
+  function importXLSX(file, opts) {
+    file.arrayBuffer().then(async (buf) => {
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.load(buf);
+      const ws = wb.worksheets.find(s => s.name === 'Transactions') || wb.worksheets[0];
+      if (!ws) { alert('No worksheet found in that file.'); return; }
+
+      const headers = ws.getRow(1).values.slice(1).map(h => String(h ?? '').trim());
+      const rows = [];
+      ws.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return;
+        const vals = row.values.slice(1);
+        const obj = {};
+        headers.forEach((h, idx) => { obj[h] = vals[idx] ?? ''; });
+        rows.push(obj);
+      });
+      if (!rows.length) { alert("That file has no rows to import."); return; }
+      _applyRows(rows, opts);
+    }).catch(err => alert('Could not read that file: ' + err.message));
+  }
+
+  return { exportCSV, exportXLSX, importCSV, importXLSX };
+})();
+
+const Review = (() => {
+  let _filtered    = [];
+  let _sourceFilter = '';
+  let _catFilter    = '';
+  let _sortCol     = 'post_date';
+  let _sortAsc     = true;
+  let _selected    = new Set();   // ids of rows selected via click/ctrl+click/shift+click
+  let _lastSelectedId = null;     // shift-click range anchor
+
+  const SORT_ACCESSORS = {
+    post_date: t => t.post_date,
+    reference: t => t.reference,
+    source:    t => t.source || (t.source_file ? t.source_file.replace('.trading','') : 'Bank'),
+    category:  t => t.category,
+    amount:    t => t.amount,
+  };
+  function _sortRows(rows) {
+    const get = SORT_ACCESSORS[_sortCol] || SORT_ACCESSORS.post_date;
+    return [...rows].sort((a, b) => {
+      const va = get(a), vb = get(b);
+      if (typeof va === 'string') return _sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+      return _sortAsc ? va - vb : vb - va;
+    });
+  }
+  function sort(col) {
+    _sortCol === col ? (_sortAsc = !_sortAsc) : (_sortCol = col, _sortAsc = false);
+    _render();
+  }
+
+  // ── Merge ─────────────────────────────────────────────────────────────────────
+
+  /* Merge freshly extracted bank transactions. Re-extracting a statement
+     replaces that statement's rows; everything else stays. De-dupes by id. */
+  function mergeFromExtractor(txns) {
+    const batchSources = new Set(txns.map(t => t.source_file).filter(Boolean));
+    const keep = AppState.reviewData.filter(t =>
+      t.locked || !batchSources.has(t.source_file));
+    const seen = new Set(keep.map(t => String(t.id)));
+    txns.forEach(t => {
+      if (seen.has(String(t.id))) return;   // trading rows arrive here too
+      seen.add(String(t.id));
+      keep.push(t);
+    });
+    AppState.reviewData = keep;
+    AppState.reviewData.sort((a,b) => a.post_date.localeCompare(b.post_date));
+    App.badgeDone('extract');
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────────
+
+  function filter() {
+    _sourceFilter = document.getElementById('rv-source-filter')?.value || '';
+    _catFilter    = document.getElementById('rv-cat-filter')?.value    || '';
+    _render();
+  }
+
+  // Deletes every non-locked row from one source (e.g. a statement uploaded
+  // twice under two filenames — same real transactions extracted twice).
+  // Operates only on already-extracted data already sitting in
+  // AppState.reviewData; nothing gets re-sent to the vision API, so this
+  // doesn't cost anything to undo a duplicate upload.
+  function removeSource() {
+    const val = document.getElementById('rv-source-filter')?.value || '';
+    if (!val) { alert('Pick the specific source you want to remove from the dropdown first.'); return; }
+
+    const matches = t => (t.source || t.source_file || 'Bank') === val;
+    const removable = AppState.reviewData.filter(t => matches(t) && !t.locked);
+    const lockedCount = AppState.reviewData.filter(t => matches(t) && t.locked).length;
+
+    if (!removable.length) {
+      alert(lockedCount
+        ? `"${val}" only has ${lockedCount} locked trading entr${lockedCount===1?'y':'ies'} — those aren't removed by this action.`
+        : `No rows found for "${val}".`);
+      return;
+    }
+
+    const msg = `Remove ${removable.length} transaction${removable.length!==1?'s':''} from "${val}"?` +
+      (lockedCount ? ` (${lockedCount} locked trading entr${lockedCount===1?'y':'ies'} from this source will be kept.)` : '') +
+      `\n\nThis only clears already-extracted data sitting in Review — nothing gets re-extracted, so this doesn't cost anything to undo the upload.`;
+    if (!confirm(msg)) return;
+
+    AppState.reviewData = AppState.reviewData.filter(t => !(matches(t) && !t.locked));
+    Store.save();
+    _sourceFilter = '';
+    render();
+    alert(`Removed ${removable.length} transactions from "${val}".`);
+  }
+
+  function render() {
+    const data = AppState.reviewData;
+    const sources = [...new Set(data.map(t => t.source || t.source_file || 'Bank'))].sort();
+    const cats    = [...new Set(data.map(t => t.category))].sort();
+
+    const srcEl = document.getElementById('rv-source-filter');
+    const catEl = document.getElementById('rv-cat-filter');
+    if (srcEl) {
+      const prev = srcEl.value;
+      srcEl.innerHTML = '<option value="">All sources</option>' +
+        sources.map(s => `<option value="${s}" ${prev===s?'selected':''}>${s}</option>`).join('');
+    }
+    if (catEl) {
+      const prev = catEl.value;
+      catEl.innerHTML = '<option value="">All categories</option>' +
+        cats.map(c => `<option value="${c}" ${prev===c?'selected':''}>${c}</option>`).join('');
+    }
+
+    if (!data.length) {
+      document.getElementById('rv-empty').style.display = 'flex';
+      document.getElementById('rv-table-wrap').innerHTML = '';
+      document.getElementById('rv-sub').textContent = 'Nothing to review yet.';
+      return;
+    }
+
+    document.getElementById('rv-empty').style.display = 'none';
+    document.getElementById('rv-sub').textContent =
+      `${data.length.toLocaleString()} transactions — click a category badge to reassign one, or ctrl/shift+click rows to categorise several at once`;
+    _render();
+  }
+
+  function _render() {
+    // Rebuild _filtered from AppState (stable — never index-dependent)
+    _filtered = _sortRows(AppState.reviewData.filter(t => {
+      const src = t.source || t.source_file || 'Bank';
+      if (_sourceFilter && src !== _sourceFilter) return false;
+      if (_catFilter && t.category !== _catFilter) return false;
+      return true;
+    }));
+
+    // Selection can only ever contain ids still present in the data (e.g.
+    // after a commit or a source removal) — drop anything stale.
+    const liveIds = new Set(AppState.reviewData.map(t => String(t.id)));
+    [..._selected].forEach(id => { if (!liveIds.has(id)) _selected.delete(id); });
+
+    const wrap = document.getElementById('rv-table-wrap');
+    if (!wrap) return;
+
+    const cols = [
+      { key: 'post_date', label: 'Date' },
+      { key: 'reference', label: 'Reference' },
+      { key: 'source',    label: 'Source' },
+      { key: 'category',  label: 'Category' },
+      { key: 'amount',    label: 'Amount', right: true },
+    ];
+
+    const bulkBar = _selected.size > 0 ? `
+      <div class="rv-bulk-bar">
+        <span><strong>${_selected.size}</strong> selected</span>
+        <div class="rv-bulk-bar-spacer"></div>
+        <button class="btn btn-primary btn-sm" id="rv-bulk-categorize-btn">Categorise Selected →</button>
+        <button class="btn btn-ghost btn-sm" id="rv-bulk-clear-btn">Clear</button>
+      </div>` : '';
+
+    wrap.innerHTML = `
+      ${bulkBar}
+      <table class="rv-table">
+        <thead>
+          <tr>${cols.map(c => `<th data-sort-col="${c.key}" ${c.right ? 'style="text-align:right"' : ''}>${c.label}<span class="rv-sort-arrow ${_sortCol===c.key?'active':''}">${_sortCol===c.key?(_sortAsc?'↑':'↓'):'↕'}</span></th>`).join('')}</tr>
+        </thead>
+        <tbody>
+          ${_filtered.map(t => {
+            const src      = t.source || (t.source_file ? t.source_file.replace('.trading','') : 'Bank');
+            const locked   = t.locked === true;
+            const txnId    = String(t.id);
+            const selected = _selected.has(txnId);
+            return `<tr data-txnid="${txnId}" class="${locked ? '' : 'rv-row-selectable'} ${selected ? 'rv-row-selected' : ''}">
+              <td class="rv-td-date">${fmtDate(t.post_date)}</td>
+              <td class="rv-td-ref" title="${t.reference}">${t.reference}</td>
+              <td class="rv-td-source">${src}</td>
+              <td>
+                <span class="rv-cat-badge ${locked ? 'locked' : ''}"
+                      style="border-left:3px solid ${catColour(t.category)}"
+                      data-txnid="${txnId}">
+                  ${t.category}
+                </span>
+              </td>
+              <td class="rv-td-amount ${t.amount < 0 ? 'neg' : 'pos'}">${fmtZAR(t.amount)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <div class="rv-footer">
+        <span>${_filtered.length.toLocaleString()} of ${AppState.reviewData.length.toLocaleString()} transactions</span>
+        <span></span>
+      </div>`;
+  }
+
+  // ── Picker ────────────────────────────────────────────────────────────────────
+
+  // Refreshes the category filter dropdown's option list without losing
+  // whatever the user currently has it set to. Shared by every action that
+  // can introduce a brand new category name (single-row edit, bulk edit,
+  // spreadsheet re-import).
+  function _refreshCatFilter() {
+    const catEl = document.getElementById('rv-cat-filter');
+    if (!catEl) return;
+    const cats = [...new Set(AppState.reviewData.map(t => t.category))].sort();
+    const prev = catEl.value;
+    catEl.innerHTML = '<option value="">All categories</option>' +
+      cats.map(c => `<option value="${c}" ${prev===c?'selected':''}>${c}</option>`).join('');
+  }
+
+  function openPicker(e) {
+    CategoryPicker.open(e, {
+      getData:  () => AppState.reviewData,
+      onChange: () => {
+        Store.save();
+        _refreshCatFilter();
+        _render();
+      }
+    });
+  }
+
+  // ── Multi-select ──────────────────────────────────────────────────────────────
+  // Click a row to select just it; ctrl/cmd+click toggles a row in/out of the
+  // selection; shift+click selects the contiguous range from the last row
+  // you clicked. This exists because the fuzzy "similar transactions" prompt
+  // on the single-row picker isn't reliable enough on its own — this gives
+  // direct, explicit control over exactly which rows get recategorised.
+
+  function selectRow(txnId, e) {
+    txnId = String(txnId);
+    const txn = AppState.reviewData.find(t => String(t.id) === txnId);
+    if (!txn || txn.locked) return;
+
+    if (e.shiftKey && _lastSelectedId != null) {
+      const ids = _filtered.filter(t => !t.locked).map(t => String(t.id));
+      const i1 = ids.indexOf(String(_lastSelectedId));
+      const i2 = ids.indexOf(txnId);
+      if (i1 !== -1 && i2 !== -1) {
+        const [lo, hi] = i1 < i2 ? [i1, i2] : [i2, i1];
+        for (let i = lo; i <= hi; i++) _selected.add(ids[i]);
+      } else {
+        _selected.add(txnId);
+      }
+    } else if (e.ctrlKey || e.metaKey) {
+      if (_selected.has(txnId)) _selected.delete(txnId); else _selected.add(txnId);
+      _lastSelectedId = txnId;
+    } else {
+      // Plain click: select only this row — click it again with nothing
+      // else selected to clear.
+      if (_selected.size === 1 && _selected.has(txnId)) _selected.clear();
+      else { _selected.clear(); _selected.add(txnId); }
+      _lastSelectedId = txnId;
+    }
+    _render();
+  }
+
+  function clearSelection() {
+    _selected.clear();
+    _render();
+  }
+
+  function categorizeSelected(anchorEl) {
+    if (!_selected.size || !anchorEl) return;
+    CategoryPicker.openBulk(anchorEl, {
+      ids: [..._selected],
+      getData: () => AppState.reviewData,
+      onChange: (applied) => {
+        Store.save();
+        _refreshCatFilter();
+        _selected.clear();
+        _render();
+        if (applied != null) alert(`Updated ${applied} transaction${applied !== 1 ? 's' : ''}.`);
+      }
+    });
+  }
+
+  // ── Commit ────────────────────────────────────────────────────────────────────
+
+  function commit() {
+    if (!AppState.reviewData.length) { alert('Nothing to commit — load some data first.'); return; }
+    const txns    = [...AppState.reviewData].sort((a,b) => a.post_date.localeCompare(b.post_date));
+    const sources = [...new Set(txns.map(t => t.source_file || t.source || 'Unknown'))];
+    AppState.committedData = {
+      transactions: txns,
+      metadata: {
+        clientName:     '',
+        filesProcessed: sources,
+        dateRange: { from: txns[0]?.post_date || '', to: txns[txns.length-1]?.post_date || '' },
+        lastUpdated: new Date().toISOString()
+      }
+    };
+    Store.save();
+    App.badgeDone('review');
+    App.goto('dashboard');
+  }
+
+  function exportForCategorise() {
+    BulkCategorize.exportXLSX(AppState.reviewData, 'taxflow-review-categorise.xlsx').catch(err => alert('Export failed: ' + err.message));
+  }
+
+  function importCategorised(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const importer = /\.xlsx$/i.test(file.name) ? BulkCategorize.importXLSX : BulkCategorize.importCSV;
+    importer(file, {
+      getData: () => AppState.reviewData,
+      onApplied: (applied, total, meta) => {
+        Store.save();
+        _refreshCatFilter();
+        _render();
+        let msg = `Updated ${applied} of ${total} rows.`;
+        if (meta.skippedLocked) msg += ` ${meta.skippedLocked} locked trading entries were left untouched.`;
+        if (meta.notFound)      msg += ` ${meta.notFound} rows didn't match any transaction (edited or deleted since export?).`;
+        if (meta.ambiguous)     msg += ` ${meta.ambiguous} rows matched more than one transaction and were skipped.`;
+        alert(msg);
+      }
+    });
+    input.value = '';
+  }
+
+  return { render, filter, removeSource, openPicker, sort, selectRow, clearSelection,
+           categorizeSelected, mergeFromExtractor, commit,
+           exportForCategorise, importCategorised };
+})();
+
+/* ============================================================
+   EVENT WIRING — replaces every inline onclick/onchange/oninput/
+   ondrag(over|leave)/ondrop/onmouseenter/onmouseleave attribute in
+   the markup above with addEventListener calls, bound once at startup.
+
+   Two patterns are used:
+   - Direct binding on elements that exist for the life of the app
+     (nav bar, drop zones, static toolbar buttons/inputs).
+   - Event delegation on a stable container for content that gets
+     rebuilt via innerHTML on every render (table rows, chart bars,
+     KPI cards, etc.) — the listener lives on the container, which
+     is never itself replaced, so it survives re-renders without
+     needing to be reattached.
+
+   This was the root cause behind two bugs fixed this session
+   (silent no-op category picks, "Import session" doing nothing):
+   inline handlers fail silently on a bad quote or a missing export.
+   Real listeners throw to the console/devtools where they're
+   actually visible, and user data (category names, references)
+   never has to be interpolated into a string of executable JS.
+   ============================================================ */
+function _bindEvents() {
+  const byId = (id) => document.getElementById(id);
+  const on   = (id, evt, fn) => { const el = byId(id); if (el) el.addEventListener(evt, fn); };
+
+  /* ── Pipeline step indicator ── */
+  document.getElementById('pipeline-steps').addEventListener('click', (e) => {
+    const step = e.target.closest('.pipeline-step[data-step]');
+    if (step) App.goto(step.dataset.step);
+  });
+  on('pipeline-settings-btn', 'click', () => App.goto('settings'));
+
+  /* ── Generic "go to pane" buttons scattered through the panes ── */
+  document.querySelector('.app-content').addEventListener('click', (e) => {
+    const el = e.target.closest('[data-goto]');
+    if (el) App.goto(el.dataset.goto);
+  });
+
+  /* ── Unvault ── */
+  on('uv-drop', 'click', () => byId('uv-file-input').click());
+  on('uv-drop', 'dragover', (e) => Unvault.onDragOver(e));
+  on('uv-drop', 'dragleave', (e) => Unvault.onDragLeave(e));
+  on('uv-drop', 'drop', (e) => Unvault.onDrop(e));
+  on('uv-file-input', 'change', function () { Unvault.onFileSelect(this); });
+  on('uv-password', 'keydown', (e) => { if (e.key === 'Enter') Unvault.unlock(); });
+  on('uv-btn', 'click', () => Unvault.unlock());
+  on('uv-add-more-btn', 'click', () => byId('uv-file-input').click());
+  on('uv-demo-btn', 'click', () => loadDemo());
+  // uv-continue-btn navigation is handled by the [data-goto] delegation above.
+  on('uv-pending-list', 'click', (e) => {
+    const btn = e.target.closest('.uv-remove-staged-btn');
+    if (btn) Unvault.removeStaged(Number(btn.dataset.idx));
+  });
+
+  /* ── Review toolbar (static; table body is delegated below) ── */
+  on('rv-source-filter', 'change', () => Review.filter());
+  on('rv-cat-filter', 'change', () => Review.filter());
+  on('rv-remove-source-btn', 'click', () => Review.removeSource());
+  on('rv-export-btn', 'click', () => Review.exportForCategorise());
+  on('rv-import-btn', 'click', () => byId('rv-import-input').click());
+  on('rv-import-input', 'change', function () { Review.importCategorised(this); });
+  on('rv-commit-btn', 'click', () => Review.commit());
+  on('rv-table-wrap', 'click', (e) => {
+    const badge = e.target.closest('.rv-cat-badge');
+    if (badge && !badge.classList.contains('locked')) { Review.openPicker(e); return; }
+
+    const th = e.target.closest('th[data-sort-col]');
+    if (th) { Review.sort(th.dataset.sortCol); return; }
+
+    const bulkCatBtn = e.target.closest('#rv-bulk-categorize-btn');
+    if (bulkCatBtn) { Review.categorizeSelected(bulkCatBtn); return; }
+
+    const bulkClearBtn = e.target.closest('#rv-bulk-clear-btn');
+    if (bulkClearBtn) { Review.clearSelection(); return; }
+
+    const row = e.target.closest('tr[data-txnid]');
+    if (row && row.classList.contains('rv-row-selectable')) { Review.selectRow(row.dataset.txnid, e); return; }
+  });
+
+  /* ── Extractor ── */
+  on('ex-run-btn', 'click', () => Extractor.run());
+  on('ex-view-dashboard-btn', 'click', () => Extractor.openDashboard());
+  on('ex-file-list', 'click', (e) => {
+    const btn = e.target.closest('.ex-reextract-btn');
+    if (btn) Extractor.reextract(Number(btn.dataset.idx));
+  });
+
+  /* ── Dashboard shell ── */
+  document.querySelector('.sh-tabs').addEventListener('click', (e) => {
+    const tab = e.target.closest('.sh-tab[data-tab]');
+    if (tab) Shell.nav(tab.dataset.tab);
+  });
+  on('sh-range-pill', 'click', () => Shell.toggleRange());
+  on('sh-range-apply-btn',  'click', () => Shell.applyRange());
+  on('sh-range-cancel-btn', 'click', () => Shell.cancelRange());
+  document.querySelector('.sh-range-presets').addEventListener('click', (e) => {
+    const btn = e.target.closest('.sh-preset[data-preset]');
+    if (btn) Shell.applyPreset(btn.dataset.preset, btn);
+  });
+  on('sh-export-btn', 'click', () => Shell.exportData());
+
+  /* Overview / Spending / Income / Monthly / Ledger — each content div is
+     static and only its innerHTML is replaced on render, so delegation
+     here survives every re-render without needing to be rebound. */
+  on('overview-content', 'click', (e) => {
+    const el = e.target.closest('[data-nav]');
+    if (el) Shell.nav(el.dataset.nav);
+  });
+  on('spending-content', 'click', (e) => {
+    const header = e.target.closest('.db-chart-row-header');
+    if (header) Dashboard.Spending.toggle(header.closest('.db-chart-row'));
+  });
+  on('income-content', 'click', (e) => {
+    const header = e.target.closest('.db-chart-row-header');
+    if (header) Dashboard.Income.toggle(header.closest('.db-chart-row'));
+  });
+  on('monthly-content', 'click', (e) => {
+    const group = e.target.closest('[data-month]');
+    if (group) { Dashboard.Monthly.expandMonth(group.dataset.month); return; }
+    if (e.target.closest('#db-month-close-btn')) Dashboard.Monthly.closeDetail();
+  });
+  on('monthly-content', 'mouseover', (e) => {
+    const group = e.target.closest('[data-month]');
+    if (!group || group.contains(e.relatedTarget)) return;
+    Dashboard.Monthly.showTip(e, group.dataset.month, Number(group.dataset.income), Number(group.dataset.expense));
+  });
+  on('monthly-content', 'mouseout', (e) => {
+    const group = e.target.closest('[data-month]');
+    if (!group || group.contains(e.relatedTarget)) return;
+    Dashboard.Monthly.hideTip();
+  });
+
+  on('ledger-content', 'input', (e) => {
+    if (e.target.id === 'ledger-search-input') Dashboard.Ledger.setSearch(e.target.value);
+  });
+  on('ledger-content', 'change', (e) => {
+    if (e.target.id === 'ledger-cat-filter') Dashboard.Ledger.setCat(e.target.value);
+    if (e.target.id === 'ledger-import-input') Dashboard.Ledger.importCategorised(e.target);
+  });
+  on('ledger-content', 'click', (e) => {
+    if (e.target.closest('#ledger-export-csv-btn'))        { Dashboard.Ledger.exportCSV(); return; }
+    if (e.target.closest('#ledger-export-categorise-btn')) { Dashboard.Ledger.exportForCategorise(); return; }
+    if (e.target.closest('#ledger-import-btn'))            { byId('ledger-import-input').click(); return; }
+    const th = e.target.closest('th[data-sort-col]');
+    if (th) { Dashboard.Ledger.sort(th.dataset.sortCol); return; }
+    const badge = e.target.closest('.db-badge');
+    if (badge && !badge.classList.contains('locked')) { Dashboard.Ledger.editCat(e); return; }
+  });
+
+  /* ── Settings ── */
+  on('set-api-key', 'input', function () { Settings.saveKey(this.value); });
+  on('set-clear-btn', 'click', () => Settings.clearData());
+  on('set-export-session-btn', 'click', () => Store.exportSidecar());
+  on('set-import-session-input', 'change', function () { Settings.importSidecar(this); });
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  _bindEvents();
+  Settings.load();
+
+  const savedAt = Store.load();
+  if (savedAt) {
+    console.log('Session restored from', savedAt);
+    if (AppState.committedData) App.badgeDone('dashboard');
+    if (AppState.reviewData?.length) App.badgeDone('reconcile');
+  }
+
+  App.goto('unlock');
+});
+</script>
+</body>
+</html>
