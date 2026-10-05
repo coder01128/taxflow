@@ -177,7 +177,7 @@ body {
 .btn-ghost:disabled { opacity: .45; cursor: not-allowed; }
 .btn-sm { padding: 7px 13px; font-size: 13px; }
 .btn-danger { background: var(--expense); color: #fff; }
-.btn-danger:hover { background: #B91C1C; }
+.btn-danger:hover { background: #7F1D1D; }
 
 /* Status pills */
 .pill {
@@ -701,17 +701,19 @@ body {
 /* ============================================================
    SHARED DASHBOARD COMPONENTS
    ============================================================ */
-.btn {
+/* Scoped to the dashboard: unscoped, these overrode the light-theme
+   buttons on every other screen (grey-on-white ghost buttons, 2.9:1). */
+#pane-dashboard .btn {
   display:inline-flex; align-items:center; gap:6px;
   padding:9px 16px; border-radius:var(--db-radius-sm);
   font-size:13px; font-weight:600; cursor:pointer; border:none;
   transition:all .14s; white-space:nowrap; font-family:var(--db-font);
 }
-.btn-primary { background:var(--db-accent); color:#fff; }
-.btn-primary:hover { background:#7B73FF; box-shadow:0 0 20px var(--db-accent-glow); }
-.btn-ghost { background:none; color:var(--db-text-2); border:1px solid var(--db-border); }
-.btn-ghost:hover { background:var(--db-surface-2); color:var(--db-text-1); }
-.btn-sm { padding:6px 12px; font-size:13px; }
+#pane-dashboard .btn-primary { background:var(--db-accent); color:#fff; }
+#pane-dashboard .btn-primary:hover { background:#4A41D8; box-shadow:0 0 20px var(--db-accent-glow); }
+#pane-dashboard .btn-ghost { background:none; color:var(--db-text-2); border:1px solid var(--db-border); }
+#pane-dashboard .btn-ghost:hover { background:var(--db-surface-2); color:var(--db-text-1); }
+#pane-dashboard .btn-sm { padding:6px 12px; font-size:13px; }
 
 .db-card {
   background:var(--db-surface);
