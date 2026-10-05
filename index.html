@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>TaxFlow — Bank Statement Analysis</title>
 
-<!-- pdf-lib for in-browser PDF decryption -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
-<!-- pdf.js for rendering PDF pages to canvas (vision extraction) -->
+<!-- pdf.js: unlocks PDFs, reads their text layer (text-first extraction), and
+     renders pages to images for the vision fallback. Keep the version in step
+     with pdfjs-dist in package.json (the Node test harness uses it). -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <!-- ExcelJS for .xlsx export/import with real dropdown data validation on the Category column -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
@@ -3093,32 +3093,9 @@ function isOperating(t){ return txnBucket(t) === 'operating'; }
 function isCapital(t)  { return txnBucket(t) === 'capital'; }
 function isTrading(t)  { return txnBucket(t) === 'trading'; }
 function operatingOnly(txns) { return txns.filter(isOperating); }
-function byCategory(txns, cat) { return txns.filter(t => t.category === cat); }
 function sumAmt(txns) { return txns.reduce((s,t) => s + t.amount, 0); }
 function sumPos(txns) { return txns.reduce((s,t) => s + (t.amount > 0 ? t.amount : 0), 0); }
 function sumNeg(txns) { return txns.reduce((s,t) => s + (t.amount < 0 ? t.amount : 0), 0); }
-
-/* Everything the Trading tab needs, derived from one filtered set. */
-function tradingSummary(txns) {
-  const pnl      = byCategory(txns, 'Trading P&L');
-  const interest = byCategory(txns, 'Investment Income');
-  const fees     = byCategory(txns, 'Trading & Evaluation Fees');
-  const drawdown = byCategory(txns, 'Trading Capital Drawdown');
-  const loans    = byCategory(txns, "Directors' & Members' Loans");
-  const pnlNet   = sumAmt(pnl), intNet = sumAmt(interest), feeNet = sumAmt(fees);
-  return {
-    pnl, interest, fees, drawdown, loans,
-    pnlGross: sumPos(pnl), pnlLoss: sumNeg(pnl), pnlNet,
-    intNet, feeNet,
-    statementNet: pnlNet + intNet + feeNet,
-    drawnOut:  sumPos(drawdown),          // broker → bank
-    paidIn:    sumNeg(drawdown),          // bank → broker (negative)
-    drawnNet:  sumAmt(drawdown),
-    loansIn:   sumPos(loans),
-    loansOut:  sumNeg(loans),
-    loansNet:  sumAmt(loans),
-  };
-}
 
 /* ============================================================
    UTILITY FUNCTIONS
@@ -3946,8 +3923,12 @@ Dashboard.Ledger = (() => {
   function sort(col)    { _sortCol===col?(_sortAsc=!_sortAsc):(_sortCol=col,_sortAsc=false); _renderTable(); }
   function exportCSV() {
     const txns=_getFiltered();
-    const csv=['Date,Reference,Category,Amount,Balance,Source',
-      ...txns.map(t=>[t.post_date,`"${t.reference}"`,`"${t.category}"`,t.amount,t.balance||'',t.source_file||''].join(','))
+    // Quote every text field and double any quotes inside it (RFC 4180).
+    const q = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const n = v => (v === null || v === undefined || v === '') ? '' : v;
+    const csv=['Date,Transaction date,Type,Reference,Category,Amount,Fees,Balance,Source',
+      ...txns.map(t=>[t.post_date, n(t.trans_date), q(t.txn_type || ''), q(t.reference), q(t.category),
+                      t.amount, n(t.fees), n(t.balance), q(t.source_file || '')].join(','))
     ].join('\n');
     const a=document.createElement('a');
     a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));

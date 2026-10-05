@@ -1,27 +1,39 @@
-# ProTax test harnesses
+# TaxFlow tests
 
-No build step, no framework. Each suite is a `<script>` block injected into a
-fresh copy of `../protax-app2.html` at run time, so it can never go stale
-against the app.
+No build step, no framework, no network calls, no AI calls.
 
+## Statement harness — `run-harness.js`
+
+Runs the app's own extraction code (the `<script id="tf-core">` block inside
+`index.html`) in Node, using `pdfjs-dist` pinned to the same pdf.js version
+`index.html` loads.
+
+```bash
+node tests/run-harness.js --dir C:\ccode\test-statements --expect C:\ccode\taxflow-lab\expected.json
 ```
-python3 build-and-run.py            # both suites
-python3 build-and-run.py buckets    # just one
+
+- `--dir` — a folder of statement PDFs. Real statements stay **outside** the repo.
+- `--expect` — optional JSON of expected results, keyed `"<Bank> <YYYY-MM>"`, e.g.
+  `{"Capitec 2024-09": {"rows": 36, "passed": 36, "whole": true}}`. Keep it with the statements, not in the repo.
+- Password-protected PDFs: set `TAXFLOW_PDF_PW` in the environment for that run.
+
+It checks, per statement: rows found, per-row running-balance checks,
+the whole-statement check and printed totals, continuity between
+consecutive statements of the same account, and text vs vision counts.
+Then it runs sabotage tests (change an amount by R1, delete a middle row,
+delete the last row) to prove the checks can fail, and vision-fallback
+tests with a mocked API (parallelism capped at 3, one retry per page,
+textless pages, bad vision rows, a page that never comes back).
+
+Output never includes file names, account numbers or transaction lines.
+The synthetic sample also works: `node tests/run-harness.js --dir samples`.
+
+## API endpoint — `api-extract.test.js`
+
+```bash
+node tests/api-extract.test.js
 ```
 
-jsdom is installed once into `~/.protax-test-deps` on first run and found via
-`NODE_PATH`. **Do not `npm install` inside this folder** — node_modules is tens
-of thousands of tiny files, and resolving it across a mounted or synced folder
-turns a 3-second run into a multi-minute one.
-
-- **harness-buckets.html** — the operating / capital / trading split. Asserts
-  against the real figures in `../protax-session.json`, so if the committed
-  data changes these numbers must be re-derived from the statements, not
-  silently updated to whatever the code now returns.
-- **harness-regression.html** — Review (column sort, multi-select, bulk
-  categorise, remove-by-source, locked trading rows), CategoryPicker (proves
-  the fuzzy "similar transactions" confirm is gone), Ledger (search, category
-  filter, sort, paging), the date drum, and every dashboard tab rendering
-  after a range change.
-
-Both suites must pass before backing up to `old-builds/`.
+Exercises `api/extract.js` with a mocked `fetch` and a dummy key that exists
+only inside the test process: method/image/size/format checks, that the
+browser can't override the prompt, model or max_tokens, and the error paths.
