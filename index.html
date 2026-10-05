@@ -22,13 +22,13 @@
   --surface-2:   #ECEEF6;
   --border:      #D8DCE8;
   --text-1:      #111827;
-  --text-2:      #6B7280;
-  --text-3:      #656E7E;
+  --text-2:      #4B5563;
+  --text-3:      #545C6B;
   --accent:      #4F46E5;
   --accent-light:#EEF2FF;
   --income:      #047857;
   --income-bg:   #ECFDF5;
-  --expense:     #DC2626;
+  --expense:     #B91C1C;
   --expense-bg:  #FEF2F2;
   --warning:     #D97706;
   --shadow-sm:   0 1px 3px rgba(0,0,0,.08), 0 1px 2px rgba(0,0,0,.04);
@@ -124,7 +124,7 @@ body {
 .pipeline-step.active .pipeline-label { color: var(--accent); font-weight: 700; }
 .pipeline-step.done .pipeline-label { color: var(--income); }
 .pipeline-sublabel {
-  font-size: 11px; color: var(--text-3); margin-top: 2px;
+  font-size: 13px; color: var(--text-3); margin-top: 2px;
   white-space: nowrap;
 }
 .pipeline-settings-wrap {
@@ -322,7 +322,7 @@ body {
    ============================================================ */
 .ex-wrap {
   flex: 1; padding: 24px;
-  max-width: 680px; width: 100%; margin: 0 auto;
+  max-width: 860px; width: 100%; margin: 0 auto;
 }
 .ex-header {
   margin-bottom: 20px;
@@ -332,23 +332,6 @@ body {
   letter-spacing: -.03em; margin-bottom: 4px;
 }
 .ex-sub { font-size: 13px; color: var(--text-3); }
-
-.ex-api-row {
-  display: flex; gap: 10px; margin-bottom: 20px;
-  align-items: center;
-}
-.ex-api-label {
-  font-size: 13px; font-weight: 600; color: var(--text-2);
-  white-space: nowrap;
-}
-.ex-api-input {
-  flex: 1; padding: 9px 14px;
-  border: 1px solid var(--border); border-radius: var(--radius-sm);
-  font-size: 13px; font-family: var(--mono);
-  background: var(--surface); color: var(--text-1);
-  outline: none; transition: border-color .14s;
-}
-.ex-api-input:focus { border-color: var(--accent); }
 
 .ex-queue-card {
   padding: 20px; margin-bottom: 16px;
@@ -413,67 +396,57 @@ body {
 }
 .ex-stat-label { font-size: 13px; color: var(--text-3); }
 
-/* Demo extraction preview */
-.ex-page-preview {
-  display: none; margin-bottom: 16px;
-  border: 1px solid var(--border); border-radius: var(--radius);
-  background: var(--surface); overflow: hidden;
+/* Reconciliation panel (per file) */
+.rc-summary {
+  padding: 14px 16px; margin-bottom: 12px; border-radius: var(--radius);
+  font-size: 15px; font-weight: 700; display: flex; align-items: center;
+  justify-content: space-between; gap: 12px; flex-wrap: wrap;
 }
-.ex-page-preview.active { display: block; }
-.ex-page-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 10px 16px; background: var(--surface-2);
+.rc-summary.ok   { background: var(--income-bg);  color: var(--income);  border: 2px solid var(--income); }
+.rc-summary.bad  { background: var(--expense-bg); color: #991B1B;        border: 2px solid var(--expense); }
+.rc-summary.warn { background: #FFFBEB;           color: #92400E;        border: 2px solid var(--warning); }
+.rc-file {
+  padding: 16px; margin-bottom: 12px;
+  border-left: 6px solid var(--border);
+}
+.rc-file.ok   { border-left-color: var(--income); }
+.rc-file.bad  { border-left-color: var(--expense); background: #FFF7F7; }
+.rc-file.warn { border-left-color: var(--warning); }
+.rc-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+.rc-name { font-size: 15px; font-weight: 700; color: var(--text-1); word-break: break-all; }
+.rc-meta { font-size: 13px; color: var(--text-2); margin-top: 3px; }
+.rc-status {
+  font-size: 14px; font-weight: 700; padding: 5px 12px; border-radius: 20px;
+  color: #fff; white-space: nowrap;
+}
+.rc-status.ok   { background: var(--income); }
+.rc-status.bad  { background: var(--expense); }
+.rc-status.warn { background: #92400E; }
+.rc-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px; margin-top: 12px;
+}
+.rc-cell { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; font-size: 13px; color: var(--text-2); }
+.rc-cell b { display: block; font-family: var(--mono); font-size: 14px; color: var(--text-1); margin-top: 2px; }
+.rc-cell .yes { color: var(--income); font-weight: 700; }
+.rc-cell .no  { color: #991B1B; font-weight: 700; }
+.rc-problems { margin: 12px 0 0 18px; font-size: 13px; color: #991B1B; line-height: 1.6; }
+.rc-rows { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+.rc-rows th {
+  text-align: left; font-weight: 700; color: var(--text-2); padding: 6px 8px;
   border-bottom: 1px solid var(--border);
-  font-size: 13px; font-weight: 600; color: var(--text-2);
 }
-.ex-page-body {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 0;
-  max-height: 420px; overflow: hidden;
+.rc-rows td { padding: 6px 8px; border-bottom: 1px solid var(--border); color: var(--text-1); }
+.rc-rows td.num { font-family: var(--mono); text-align: right; white-space: nowrap; }
+.rc-rows td.ref { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rc-btn {
+  background: var(--surface); border: 1.5px solid var(--expense); color: #991B1B;
+  border-radius: 6px; padding: 4px 10px; font-size: 13px; font-weight: 600;
+  cursor: pointer; font-family: var(--font); white-space: nowrap;
 }
-.ex-page-img-wrap {
-  padding: 12px; border-right: 1px solid var(--border);
-  overflow: hidden; display: flex; align-items: flex-start; justify-content: center;
-  background: #f8f8fc;
-}
-.ex-page-img-wrap img {
-  max-width: 100%; max-height: 396px; border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0,0,0,.1);
-}
-.ex-page-txns {
-  padding: 12px; overflow-y: auto; max-height: 396px;
-  font-size: 13px;
-}
-.ex-page-txn-row {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 5px 8px; border-radius: 6px;
-}
-.ex-page-txn-row:nth-child(even) { background: var(--surface-2); }
-.ex-page-txn-ref { flex: 1; color: var(--text-1); white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; margin-right: 12px; }
-.ex-page-txn-amt { font-family: var(--mono); font-weight: 600; white-space: nowrap; }
-.ex-page-txn-amt.credit { color: var(--income); }
-.ex-page-txn-amt.debit { color: var(--expense); }
-.ex-page-txn-cat {
-  font-size: 13px; color: var(--text-3); margin-left: 8px;
-  white-space: nowrap;
-}
-.ex-recon-card {
-  padding: 16px; margin-bottom: 16px; display: none;
-  border: 1px solid var(--income); background: var(--income-bg);
-  border-radius: var(--radius);
-}
-.ex-recon-title {
-  font-size: 13px; font-weight: 700; text-transform: uppercase;
-  letter-spacing: .08em; color: var(--income); margin-bottom: 10px;
-}
-.ex-recon-grid {
-  display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;
-  font-size: 13px;
-}
-.ex-recon-item { text-align: center; }
-.ex-recon-label { color: var(--text-3); margin-bottom: 2px; }
-.ex-recon-val { font-family: var(--mono); font-weight: 600; color: var(--text-1); }
-.ex-recon-match { color: var(--income); font-weight: 700; }
+.rc-btn:hover { background: var(--expense); color: #fff; }
+.rc-btn.ok { border-color: var(--income); color: var(--income); }
+.rc-btn.ok:hover { background: var(--income); color: #fff; }
 
 /* ============================================================
    SETTINGS PANE
@@ -548,8 +521,9 @@ body {
   --db-border:      rgba(255,255,255,.08);
   --db-text-1:      #F0F2FF;
   --db-text-2:      #8B90A8;
-  --db-text-3:      #7B8599;
-  --db-accent:      #6C63FF;
+  --db-text-3:      #9AA3B8;
+  --db-accent:      #5B52F0;   /* backgrounds/borders (white text 5.4:1) */
+  --db-accent-text: #8F88FF;   /* accent-coloured TEXT on dark surfaces (5.1:1+) */
   --db-accent-glow: rgba(108,99,255,.25);
   --db-income:      #00E5A0;
   --db-income-dim:  rgba(0,229,160,.15);
@@ -591,7 +565,7 @@ body {
   white-space:nowrap; letter-spacing:-.01em;
 }
 .sh-tab:hover { color:var(--db-text-1); }
-.sh-tab.active { color:var(--db-accent); border-bottom-color:var(--db-accent); }
+.sh-tab.active { color:var(--db-accent-text); border-bottom-color:var(--db-accent); }
 .sh-tab-icon { width:15px; height:15px; opacity:.6; flex-shrink:0; }
 .sh-tab.active .sh-tab-icon { opacity:1; }
 
@@ -622,7 +596,7 @@ body {
   display:flex; align-items:center; gap:8px;
   cursor:pointer; user-select:none;
 }
-.sh-range-label span { font-weight:600; color:var(--db-accent); }
+.sh-range-label span { font-weight:600; color:var(--db-accent-text); }
 .sh-range-presets { display:flex; gap:5px; }
 .sh-preset {
   font-size:13px; font-weight:600; padding:3px 10px;
@@ -680,7 +654,7 @@ body {
   flex-shrink:0; transition:color .12s,font-size .12s;
   cursor:pointer;
 }
-.sh-drum-item.selected { color:var(--db-accent); font-weight:700; font-size:16px; }
+.sh-drum-item.selected { color:var(--db-accent-text); font-weight:700; font-size:16px; }
 /* Days that don't exist in the selected month (31 Feb, 31 Apr…). Visibly
    dead and not clickable, rather than silently accepted. */
 .sh-drum-item.invalid { opacity:.22; pointer-events:none; text-decoration:line-through; }
@@ -688,7 +662,7 @@ body {
 /* Draft vs applied: nothing commits until Apply is pressed. */
 .sh-range-draft {
   font-weight:600; letter-spacing:0; text-transform:none; font-size:13px;
-  font-family:var(--db-mono); color:var(--db-accent);
+  font-family:var(--db-mono); color:var(--db-accent-text);
 }
 .sh-range-actions {
   display:flex; align-items:center; justify-content:flex-end; gap:8px;
@@ -781,7 +755,7 @@ body {
 }
 .db-kpi-value.income  { color:var(--db-income); }
 .db-kpi-value.expense { color:var(--db-expense); }
-.db-kpi-value.accent  { color:var(--db-accent); }
+.db-kpi-value.accent  { color:var(--db-accent-text); }
 .db-kpi-value.warning { color:var(--db-warning); }
 .db-kpi-sub { font-size:13px; color:var(--db-text-3); }
 
@@ -1022,7 +996,7 @@ body {
 }
 .db-ledger-table th:hover { color:var(--db-text-1); }
 .db-sort-arrow { margin-left:4px; opacity:.4; }
-.db-sort-arrow.active { opacity:1; color:var(--db-accent); }
+.db-sort-arrow.active { opacity:1; color:var(--db-accent-text); }
 .db-ledger-table td {
   padding:9px 14px; border-bottom:1px solid var(--db-border); vertical-align:middle;
 }
@@ -1040,7 +1014,7 @@ body {
   background:var(--db-surface-2); color:var(--db-text-2);
   cursor:pointer; white-space:nowrap; transition:all .1s;
 }
-.db-badge:not(.locked):hover { background:var(--db-accent-glow); color:var(--db-accent); }
+.db-badge:not(.locked):hover { background:var(--db-accent-glow); color:var(--db-accent-text); }
 .db-badge.active-filter { background:var(--db-accent); color:#fff; }
 .db-badge.locked { cursor:default; opacity:.6; }
 .db-ledger-footer {
@@ -1136,6 +1110,21 @@ body {
 .rv-td-ref { max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:var(--text-1); }
 .rv-td-source { font-size:13px; color:var(--text-3); white-space:nowrap; }
 .rv-td-amount { font-family:var(--mono); font-weight:600; text-align:right; white-space:nowrap; }
+.rv-td-check { white-space:nowrap; font-weight:700; }
+.rv-td-check.ok  { color:var(--income); }
+.rv-td-check.bad { color:#991B1B; }
+.rv-td-check.na  { color:var(--text-2); font-weight:400; }
+.rv-td-path { white-space:nowrap; color:var(--text-2); }
+.rv-table tr.rv-row-bad td { background:#FEE2E2; }
+.rv-table tr.rv-row-bad td:first-child { box-shadow:inset 4px 0 0 var(--expense); }
+.rv-table tr.rv-row-flash td { animation: rvflash 2.4s ease-out; }
+@keyframes rvflash { 0%,40% { background:#FDE68A; } 100% { } }
+.rv-alert {
+  display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+  padding:12px 16px; margin-bottom:12px; border-radius:var(--radius);
+  background:var(--expense-bg); border:2px solid var(--expense); color:#991B1B;
+  font-size:14px; font-weight:700;
+}
 .rv-td-amount.neg { color:var(--expense); }
 .rv-td-amount.pos { color:var(--income); }
 .rv-cat-badge {
@@ -1151,7 +1140,7 @@ body {
   background:var(--accent-light); color:var(--accent); border-color:var(--accent);
 }
 .rv-cat-badge.locked { cursor:default; opacity:.65; }
-.rv-cat-badge.locked::after { content:'🔒'; font-size:9px; margin-left:3px; }
+.rv-cat-badge.locked::after { content:'🔒'; font-size:13px; margin-left:3px; }
 .rv-cat-picker {
   position:fixed; z-index:200;
   background:var(--surface); border:1px solid var(--border);
@@ -1179,14 +1168,28 @@ body {
 }
 .rv-cat-picker.cp-dark .rv-cat-option { color:var(--db-text-1); }
 .rv-cat-picker.cp-dark .rv-cat-option:hover,
-.rv-cat-picker.cp-dark .rv-cat-option.selected { background:var(--db-accent-glow); color:var(--db-accent); }
-.rv-cat-picker.cp-dark .rv-cat-option.add-new { color:var(--db-accent); }
+.rv-cat-picker.cp-dark .rv-cat-option.selected { background:var(--db-accent-glow); color:var(--db-accent-text); }
+.rv-cat-picker.cp-dark .rv-cat-option.add-new { color:var(--db-accent-text); }
 .rv-footer {
   padding:10px 14px; border-top:1px solid var(--border);
   font-size:13px; color:var(--text-3);
   background:var(--surface-2);
   display:flex; justify-content:space-between; align-items:center;
 }
+
+/* ============================================================
+   DESIGN RULES SAFETY NET (CLAUDE.md): every interactive element
+   gets a pointer cursor and a visible hover state.
+   ============================================================ */
+button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
+[data-goto], [data-nav], [data-month], [data-sort-col], .pipeline-step,
+.rv-row-selectable, .rv-cat-badge:not(.locked), .db-badge:not(.locked),
+.rv-cat-option, .sh-tab, .sh-preset, .db-chart-row-header { cursor: pointer; }
+.db-filter-select:hover:not(:disabled) { border-color: var(--db-accent-text); }
+[data-sort-col]:hover { text-decoration: underline; }
+[data-month]:hover { opacity: .8; }
+[data-nav]:hover { filter: brightness(1.15); }
+.uv-remove-staged-btn:hover { color: var(--expense) !important; }
 </style>
 </head>
 
@@ -1206,13 +1209,13 @@ body {
       <div class="pipeline-step" data-step="extract">
         <div class="pipeline-circle">2</div>
         <div class="pipeline-label">Extract</div>
-        <div class="pipeline-sublabel">Vision AI reads pages</div>
+        <div class="pipeline-sublabel">Read &amp; check balances</div>
       </div>
       <div class="pipeline-line" data-after="extract"></div>
       <div class="pipeline-step" data-step="reconcile">
         <div class="pipeline-circle">3</div>
-        <div class="pipeline-label">Reconcile</div>
-        <div class="pipeline-sublabel">Verify against totals</div>
+        <div class="pipeline-label">Review</div>
+        <div class="pipeline-sublabel">Categorise &amp; commit</div>
       </div>
       <div class="pipeline-line" data-after="reconcile"></div>
       <div class="pipeline-step" data-step="dashboard">
@@ -1313,6 +1316,12 @@ body {
             <select class="db-filter-select" id="rv-cat-filter">
               <option value="">All categories</option>
             </select>
+            <select class="db-filter-select" id="rv-check-filter" title="Filter by balance check and extraction path">
+              <option value="">All rows</option>
+              <option value="text">Text rows</option>
+              <option value="bad">Unbalanced rows</option>
+              <option value="vision">Vision rows</option>
+            </select>
             <button class="btn btn-ghost" id="rv-export-btn" title="Export every row with a suggested-category column, for bulk editing in Excel or by an AI">⇩ Categorise in Excel</button>
             <button class="btn btn-ghost" id="rv-import-btn" title="Re-import a categorised CSV — matches rows by id, skips locked trading entries">⇧ Import categorised</button>
             <input type="file" id="rv-import-input" accept=".csv,.xlsx" style="display:none">
@@ -1326,6 +1335,7 @@ body {
           <div class="db-empty-title">Nothing to review yet</div>
           <div class="db-empty-body">Extract bank statements first — go to the Unvault tab.</div>
         </div>
+        <div id="rv-alert"></div>
         <div id="rv-table-wrap"></div>
       </div>
     </div>
@@ -1335,10 +1345,8 @@ body {
       <div class="ex-wrap">
         <div class="ex-header">
           <div class="ex-title">Extract Transactions</div>
-          <div class="ex-sub">Claude Vision reads each page and returns structured transaction data.</div>
+          <div class="ex-sub">Reads each statement's text and checks every row against the bank's printed running balance. Pages with no readable text, or rows that don't balance, fall back to AI vision (online app only).</div>
         </div>
-
-        <input type="hidden" id="ex-api-key" value="">
 
         <!-- File queue -->
         <div class="card ex-queue-card" id="ex-queue-card">
@@ -1368,25 +1376,8 @@ body {
           <div class="ex-log" id="ex-log"></div>
         </div>
 
-        <!-- Demo page preview -->
-        <div class="ex-page-preview" id="ex-page-preview">
-          <div class="ex-page-header">
-            <span id="ex-page-title">Page 1 of 2</span>
-            <span id="ex-page-count">0 transactions</span>
-          </div>
-          <div class="ex-page-body">
-            <div class="ex-page-img-wrap">
-              <img id="ex-page-img" alt="Rendered PDF page">
-            </div>
-            <div class="ex-page-txns" id="ex-page-txns"></div>
-          </div>
-        </div>
-
-        <!-- Reconciliation -->
-        <div class="ex-recon-card" id="ex-recon-card">
-          <div class="ex-recon-title">Reconciliation</div>
-          <div class="ex-recon-grid" id="ex-recon-grid"></div>
-        </div>
+        <!-- Reconciliation: one status card per file (Extractor._renderRecon) -->
+        <div id="ex-recon"></div>
 
         <!-- Results -->
         <div class="card ex-results-card" id="ex-results-card">
@@ -1406,7 +1397,7 @@ body {
             </div>
           </div>
           <button class="btn btn-primary" id="ex-view-dashboard-btn">
-            Continue to Reconcile →
+            Continue to Review →
           </button>
         </div>
       </div>
@@ -1515,10 +1506,8 @@ body {
         <div class="set-sub">Preferences and session management.</div>
 
         <div class="set-section">
-          <div class="set-section-title">Extraction API</div>
-          <div class="set-hint">Vision extraction uses a server-side API key (OPENROUTER_API_KEY). No client-side key needed.</div>
-          <input type="hidden" id="set-api-key" value="">
-          <span class="set-saved" id="set-saved" style="display:none">✓ Saved</span>
+          <div class="set-section-title">Extraction</div>
+          <div class="set-hint">Statements are read from their text layer in your browser. Only pages without readable text, or with rows that don't balance, are sent to the AI vision fallback, which runs on the server (online app only). No API key is needed here.</div>
         </div>
 
         <div class="set-section">
@@ -1546,9 +1535,9 @@ body {
         <div class="set-section">
           <div class="set-section-title">About</div>
           <div style="font-size:13px;color:var(--text-2);line-height:1.6">
-            TaxFlow — v3.0<br>
-            Extraction powered by Claude Vision via server API.<br>
-            PDF processing happens in your browser.
+            TaxFlow — v3.1 (text-first)<br>
+            Statements are read and reconciled in your browser.<br>
+            AI vision is only a fallback, via the server API.
           </div>
         </div>
       </div>
@@ -1855,12 +1844,28 @@ body {
     return null;
   }
 
-  function assign(money, cols) {
+  /* Assign the money values on one line to header columns, one-to-one.
+     Distance = how well the value lines up with the header on either edge
+     (statements left- or right-align figures). Closest pairs win first, so
+     a long credit that spills into the Balance column (synthetic sample)
+     still lands in Credit, and two values can never both be "balance". */
+  function assignLine(monies, cols) {
     const mcols = cols.filter(c => ['balance', 'fees', 'debit', 'credit', 'amount'].includes(c.role));
-    const over = mcols.filter(c => !(money.x1 < c.x0 - 2 || money.x0 > c.x1 + 2));
-    if (over.length === 1) return over[0].role;
-    const pool = over.length ? over : mcols;
-    return pool.reduce((best, c) => Math.abs(c.x1 - money.x1) < Math.abs(best.x1 - money.x1) ? c : best).role;
+    const pairs = [];
+    monies.forEach((m, i) => mcols.forEach(c => pairs.push({
+      i, role: c.role, d: Math.min(Math.abs(m.x0 - c.x0), Math.abs(m.x1 - c.x1)),
+    })));
+    pairs.sort((a, b) => a.d - b.d);
+    const out = new Array(monies.length).fill(null), used = new Set();
+    for (const p of pairs) {
+      if (out[p.i] !== null || used.has(p.role)) continue;
+      out[p.i] = p.role; used.add(p.role);
+    }
+    // more values than columns: fall back to the nearest column
+    monies.forEach((m, i) => {
+      if (out[i] === null) out[i] = pairs.filter(p => p.i === i)[0].role;
+    });
+    return out;
   }
 
   function isoDate(d, fallbackYear) {
@@ -1945,8 +1950,9 @@ body {
         if (rowDate.length && inCols.length) {
           const row = { page: pi, date: rowDate[0].text, trans_date_raw: rowDate[1] ? rowDate[1].text : null,
             desc: text, amount: 0, fee: 0, balance: null, star: 0, nMoney: 0, path: 'text' };
-          for (const m of inCols) {
-            const role = assign(m, cols);
+          const roles = assignLine(inCols, cols);
+          for (const [mi, m] of inCols.entries()) {
+            const role = roles[mi];
             const v = m.v;
             if (role === 'balance') row.balance = v;
             else if (role === 'fees') row.fee += m.explicit ? v : -Math.abs(v);
@@ -2061,7 +2067,11 @@ body {
     const groups = {};
     results.forEach(r => {
       if (!r.period || !r.period.from) { r.continuity = { status: 'unknown', detail: 'No dated rows' }; return; }
-      const k = r.bank + '|' + (r.accountKey || '?');
+      if (!r.accountKey) {
+        r.continuity = { status: 'unknown', detail: "Account number not found on the statement, so it can't be linked to other statements" };
+        return;
+      }
+      const k = r.bank + '|' + r.accountKey;
       (groups[k] = groups[k] || []).push(r);
     });
     Object.values(groups).forEach(list => {
@@ -2209,6 +2219,7 @@ body {
             } catch (e) {
               info.visionError = e.message || String(e);
               log(`  Page ${pn}: vision attempt ${attempt} failed — ${info.visionError}`, 'err');
+              if (e && e.noRetry) break;   // e.g. offline: a retry can't succeed
             }
           }
         }
@@ -2265,7 +2276,7 @@ body {
       rows, rowSummary, whole, pageInfo, pages: pages.length,
       counts: { text: rows.filter(r => r.path === 'text').length, vision: rows.filter(r => r.path === 'vision').length },
       skippedDated: parsed.skippedDated.length, orphanMoneyLines: parsed.orphanMoneyLines,
-      ms, readMs, status, problems,
+      ms, readMs, status, problems, unreadPages: unread.map(p => p.page),
     };
   }
 
@@ -2317,8 +2328,8 @@ body {
 const AppState = {
   unlockedFiles:    [],     // [{name, bytes: Uint8Array, pages, password?}] — bytes stay
                             // as uploaded; pdf.js decrypts on read using password.
-  apiKey:           '',
   extractedData:    null,   // raw bank transactions from Extractor
+  reconResults:     [],     // per-file reconciliation summaries (Extractor._summary)
   reviewData:       [],     // merged, editable — pending commit
   committedData:    null,   // final dataset sent to Dashboard
   customCategories: [],     // user-added category names
@@ -2333,6 +2344,7 @@ const Store = (() => {
         reviewData:       AppState.reviewData,
         committedData:    AppState.committedData,
         customCategories: AppState.customCategories,
+        reconResults:     AppState.reconResults,
         savedAt:          new Date().toISOString(),
       };
       localStorage.setItem(KEY, JSON.stringify(payload));
@@ -2346,6 +2358,7 @@ const Store = (() => {
       if (p.reviewData)       AppState.reviewData       = p.reviewData;
       if (p.committedData)    AppState.committedData     = p.committedData;
       if (p.customCategories) AppState.customCategories  = p.customCategories;
+      if (p.reconResults)     AppState.reconResults      = p.reconResults;
       return p.savedAt || true;
     } catch(e) { return false; }
   }
@@ -2353,6 +2366,7 @@ const Store = (() => {
     localStorage.removeItem(KEY);
     AppState.reviewData = [];
     AppState.committedData = null; AppState.customCategories = [];
+    AppState.reconResults = [];
   }
   function exportSidecar() {
     const payload = {
@@ -2442,20 +2456,7 @@ const App = (() => {
    SETTINGS
    ============================================================ */
 const Settings = (() => {
-  function load() {
-    const k = sessionStorage.getItem('taxflow_api_key') || '';
-    document.getElementById('set-api-key').value = k;
-    document.getElementById('ex-api-key').value = k;
-    AppState.apiKey = k;
-  }
-  function saveKey(val) {
-    AppState.apiKey = val;
-    sessionStorage.setItem('taxflow_api_key', val);
-    document.getElementById('ex-api-key').value = val;
-    const saved = document.getElementById('set-saved');
-    saved.style.display = 'inline';
-    setTimeout(() => { saved.style.display = 'none'; }, 1500);
-  }
+  function load() { /* nothing to load — no client-side settings */ }
   async function importSidecar(input) {
     if (!input.files[0]) return;
     try {
@@ -2486,7 +2487,7 @@ const Settings = (() => {
     Dashboard.showEmpty();
     App.goto('unlock');
   }
-  return { load, saveKey, clearData, importSidecar };
+  return { load, clearData, importSidecar };
 })();
 
 /* ============================================================
@@ -2678,16 +2679,20 @@ const Unvault = (() => {
   return { onDragOver, onDragLeave, onDrop, onFileSelect, unlock, removeStaged };
 })();
 
+/* The synthetic demo statement (samples/sample-statement.pdf, made-up data),
+   embedded so the demo also works when index.html is opened from disk,
+   where fetch() of a local file is blocked. */
+const SAMPLE_PDF_B64 = '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';
+
 async function loadDemo() {
   const btn = document.getElementById('uv-demo-btn');
   btn.disabled = true;
   btn.textContent = 'Loading sample…';
 
   try {
-    const pdfResp = await fetch('samples/sample-statement.pdf');
-    if (!pdfResp.ok) throw new Error(`PDF fetch HTTP ${pdfResp.status}`);
-
-    const pdfBytes = new Uint8Array(await pdfResp.arrayBuffer());
+    const bin = atob(SAMPLE_PDF_B64);
+    const pdfBytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) pdfBytes[i] = bin.charCodeAt(i);
 
     const pdfjsLib = window['pdfjs-dist/build/pdf'];
     pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -2696,25 +2701,27 @@ async function loadDemo() {
     const pageCount = pdfDoc.numPages;
     await pdfDoc.destroy();
 
-    AppState.unlockedFiles.push({
-      name: 'sample-statement.pdf',
-      bytes: pdfBytes,
-      pages: pageCount,
-    });
+    if (!AppState.unlockedFiles.some(f => f.name === 'sample-statement.pdf')) {
+      AppState.unlockedFiles.push({ name: 'sample-statement.pdf', bytes: pdfBytes, pages: pageCount });
+    }
 
     App.badgeDone('unlock');
     App.goto('extract');
     Extractor.sync();
     setTimeout(() => Extractor.run(), 400);
   } catch (e) {
+    alert('Could not load sample data: ' + e.message);
+  } finally {
     btn.disabled = false;
     btn.textContent = 'Try with sample statement';
-    alert('Could not load sample data: ' + e.message);
   }
 }
 
 /* ============================================================
-   MODULE 2: EXTRACTOR
+   MODULE 2: EXTRACTOR — text first, vision fallback, real
+   reconciliation. The work happens in TF (tf-core block); this
+   module supplies the browser pieces (page rendering, the API
+   call) and draws the result.
    ============================================================ */
 const Extractor = (() => {
   /* Collision-proof transaction ids. Session-scoped counter plus a per-load
@@ -2724,70 +2731,56 @@ const Extractor = (() => {
   let _idN = 0;
   function _idSeq() { return `${_idRun}_${(++_idN).toString(36)}`; }
 
-  const CATEGORY_RULES = `You are a South African bank statement transaction categoriser.
-Given a transaction reference string, assign it to exactly one of these categories:
-Groceries, Fuel, Utilities, Medical, Dining Out, Insurance, Clothing & Apparel,
-Trading & Evaluation Fees, Subscriptions, Mobile & Data, Home & Maintenance,
-ATM / Cash, Entertainment, Transfers, Directors' & Members' Loans, Trading P&L,
-Trading Capital Drawdown, Investment Income, Transport & Rides, Salary / Income,
-Freelance Income, Uncategorised.
-
-SA-specific rules:
-- CHECKERS, WOOLWORTHS FOOD, PICK N PAY, SPAR, SHOPRITE → Groceries
-- ENGEN, BP, SHELL, SASOL, ASTRON → Fuel
-- CITY POWER, POWERTIME, ESKOM, RATES, DSTV, SHOWMAX, NETFLIX → Utilities
-- DISCHEM, CLICKS, NETCARE, MEDICLINIC, DISCOVERY HEALTH → Medical
-- NANDOS, OCEAN BASKET, STEERS, KFC, WIMPY, UBER EATS, MR DELIVERY → Dining Out
-- OLD MUTUAL, DISCOVERY, MIWAY, OUTSURANCE → Insurance
-- TOPSTEP, FTMO, FUNDED TRADER → Trading & Evaluation Fees
-- PERESEC, PEREGRINE → Trading Capital Drawdown
-- VODACOM, MTN, TELKOM, RAIN, CELL C → Mobile & Data
-- UBER, BOLT, GAUTRAIN → Transport & Rides
-- ATM, CASH WITHDRAWAL → ATM / Cash
-- SALARY, WAGES, PAYROLL → Salary / Income`;
+  // Must match MAX_IMAGE_B64 in api/extract.js. A page image is checked here
+  // before sending, so an oversized page gets a clear message instead of a 413.
+  const MAX_IMAGE_B64 = 3000000;
 
   function sync() {
     const list = document.getElementById('ex-file-list');
     const btn  = document.getElementById('ex-run-btn');
-    const key  = sessionStorage.getItem('taxflow_api_key') || '';
-    document.getElementById('ex-api-key').value = key;
-    AppState.apiKey = key;
 
     if (!AppState.unlockedFiles.length) {
-      list.innerHTML = '<div class="ex-queue-empty">No files unlocked yet. Go to Unvault first.</div>';
+      list.innerHTML = '<div class="ex-queue-empty">No files unlocked yet. Go to Unlock first.</div>';
       btn.disabled = true;
       btn.textContent = '▶ Run Extraction';
+      _renderRecon();
       return;
     }
     list.innerHTML = AppState.unlockedFiles.map((f, i) => `
       <div class="ex-file-row">
         <span class="ex-file-icon">📄</span>
-        <span class="ex-file-name">${f.name}</span>
+        <span class="ex-file-name">${_esc(f.name)}</span>
         <span class="ex-file-pages">${f.pages} page${f.pages !== 1 ? 's' : ''}</span>
         <span class="ex-file-status">
           ${f.extracted
-            ? `<span class="pill pill-green">✓ Extracted</span><button class="ex-reextract-btn" data-idx="${i}" title="Force re-extract this file">↻</button>`
+            ? `${_pill(f.result)}<button class="ex-reextract-btn" data-idx="${i}" title="Force re-extract this file">↻</button>`
             : `<span class="pill pill-blue">Ready</span>`}
         </span>
       </div>
     `).join('');
-    // Only files not yet cleanly extracted this session actually run — a
-    // file already marked done is skipped rather than re-sent to the vision
-    // API, so adding one new statement doesn't re-process everything else
-    // already in the queue.
+    // Only files not yet extracted this session run, so adding one new
+    // statement doesn't re-process everything already in the queue.
     const pendingCount = AppState.unlockedFiles.filter(f => !f.extracted).length;
     btn.disabled = pendingCount === 0;
     btn.textContent = pendingCount > 0 ? `▶ Run Extraction (${pendingCount} new)` : '✓ All Extracted';
+    _renderRecon();
   }
 
-  // Clears a file's "extracted" flag so the next Run Extraction picks it
-  // back up, for when you deliberately want to redo one (e.g. after a fix
-  // like this one, or if you suspect a page came out wrong).
+  function _pill(r) {
+    if (!r) return '<span class="pill pill-green">✓ Extracted</span>';
+    if (r.status === 'reconciled') return '<span class="pill pill-green">✓ Reconciled</span>';
+    if (r.status === 'unverified') return '<span class="pill pill-grey">Unverified</span>';
+    return '<span class="pill pill-red">✗ Needs attention</span>';
+  }
+
+  // Clears a file's "extracted" flag so the next Run Extraction picks it back up.
   function reextract(idx) {
     const f = AppState.unlockedFiles[idx];
     if (!f) return;
     f.extracted = false;
     f.extractedTxns = null;
+    f.result = null;
+    AppState.reconResults = (AppState.reconResults || []).filter(r => r.name !== f.name);
     sync();
   }
 
@@ -2806,115 +2799,54 @@ SA-specific rules:
     document.getElementById('ex-progress-label').textContent = label;
   }
 
-  async function _renderPage(pdfDoc, pageNum) {
-    const page = await pdfDoc.getPage(pageNum);
-    const viewport = page.getViewport({ scale: 1.5 });
-
-    const canvas = document.createElement('canvas');
-    canvas.width  = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext('2d');
-    await page.render({ canvasContext: ctx, viewport }).promise;
-    return canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+  function _esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  function _pdfjs() {
+    const lib = window['pdfjs-dist/build/pdf'];
+    lib.GlobalWorkerOptions.workerSrc =
+      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    return lib;
+  }
 
-
-  const MAX_TOKENS = 8192; // raised from 4096 — dense statement pages (20+ rows) were getting cut off mid-JSON
-
-  async function _extractPage(base64Image, filename, pageNum) {
-    const prompt = `Extract ALL transactions from this bank statement page as JSON.
-Return ONLY a JSON array with no markdown. Each transaction:
-{
-  "post_date": "YYYY-MM-DD",
-  "trans_date": "YYYY-MM-DD",
-  "txn_type": "Credit" or "Debit",
-  "reference": "merchant or description",
-  "amount": number (positive for credit, negative for debit),
-  "balance": number (running balance after transaction),
-  "fees": number (0 if none)
-}
-
-${CATEGORY_RULES}
-
-Also include a "category" field on each transaction.
-If no transactions visible on this page return [].`;
-
-    const resp = await fetch('/api/extract', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: base64Image, prompt, max_tokens: MAX_TOKENS }),
-    });
-
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(`API ${resp.status}: ${err.error || resp.statusText}`);
+  // Vision fallback only: render one page to JPEG, stepping quality down
+  // until it fits under the server's size cap.
+  async function _renderPage(pdfPage) {
+    for (const [scale, quality] of [[1.5, 0.8], [1.25, 0.7], [1.0, 0.6]]) {
+      const viewport = pdfPage.getViewport({ scale });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await pdfPage.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      const b64 = canvas.toDataURL('image/jpeg', quality).split(',')[1];
+      if (b64.length <= MAX_IMAGE_B64) return b64;
     }
+    throw new Error(`page image is larger than the ${(MAX_IMAGE_B64 / 1e6).toFixed(1)} MB limit even at reduced quality`);
+  }
 
-    const data = await resp.json();
-    const choice = data.choices?.[0];
-    const text = choice?.message?.content || '[]';
-    const clean = text.replace(/```json|```/g, '').trim();
-
-    if (choice?.finish_reason === 'length') {
-      throw new Error(`Response truncated (hit ${MAX_TOKENS} max_tokens) — page likely has more transactions than fit. Raw tail: "${clean.slice(-120)}"`);
+  async function _callVision(image) {
+    if (!/^https?:$/.test(location.protocol)) {   // file:// (opened from disk) or similar: no server to call
+      const e = new Error('the AI vision fallback only works in the online app, not when index.html is opened from disk');
+      e.noRetry = true;
+      throw e;
     }
+    let resp;
     try {
-      return JSON.parse(clean);
+      resp = await fetch('/api/extract', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image }),
+      });
     } catch (e) {
-      throw new Error(`Could not parse model response as JSON (${e.message}). Raw response: "${clean.slice(0, 200)}${clean.length > 200 ? '…' : ''}"`);
+      throw new Error('could not reach the extraction server (' + e.message + ')');
     }
-  }
-
-  function _fmtZAR(n) {
-    const abs = Math.abs(n);
-    const parts = abs.toFixed(2).split('.');
-    parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-    return (n < 0 ? '-' : '') + 'R ' + parts.join('.');
-  }
-
-  function _showPagePreview(pageNum, totalPages, imgDataUrl, txns) {
-    const preview = document.getElementById('ex-page-preview');
-    preview.classList.add('active');
-    document.getElementById('ex-page-title').textContent = `Page ${pageNum} of ${totalPages}`;
-    document.getElementById('ex-page-count').textContent = `${txns.length} transaction${txns.length !== 1 ? 's' : ''}`;
-    document.getElementById('ex-page-img').src = imgDataUrl;
-    document.getElementById('ex-page-txns').innerHTML = txns.map(t => {
-      const isCredit = t.amount >= 0;
-      return `<div class="ex-page-txn-row">
-        <span class="ex-page-txn-ref">${t.reference}</span>
-        <span class="ex-page-txn-amt ${isCredit ? 'credit' : 'debit'}">${_fmtZAR(t.amount)}</span>
-        <span class="ex-page-txn-cat">${t.category || ''}</span>
-      </div>`;
-    }).join('');
-  }
-
-  function _showReconciliation(txns, meta) {
-    const totals = meta.totals;
-    const credits = txns.filter(t => t.amount >= 0).reduce((s, t) => s + t.amount, 0);
-    const debits  = txns.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
-    const net     = Math.round((credits - debits) * 100) / 100;
-    const expectedNet = Math.round((totals.closing_balance - totals.opening_balance) * 100) / 100;
-    const match   = Math.abs(net - expectedNet) < 0.02;
-
-    const card = document.getElementById('ex-recon-card');
-    card.style.display = 'block';
-    document.getElementById('ex-recon-grid').innerHTML = `
-      <div class="ex-recon-item">
-        <div class="ex-recon-label">Total Credits</div>
-        <div class="ex-recon-val">${_fmtZAR(credits)}</div>
-        <div class="ex-recon-label" style="margin-top:4px">Statement: ${_fmtZAR(totals.total_credits)}</div>
-      </div>
-      <div class="ex-recon-item">
-        <div class="ex-recon-label">Total Debits</div>
-        <div class="ex-recon-val">${_fmtZAR(debits)}</div>
-        <div class="ex-recon-label" style="margin-top:4px">Statement: ${_fmtZAR(totals.total_debits)}</div>
-      </div>
-      <div class="ex-recon-item">
-        <div class="ex-recon-label">Net Movement</div>
-        <div class="ex-recon-val">${_fmtZAR(net)}</div>
-        <div class="ex-recon-match" style="margin-top:4px">${match ? '✓ Reconciled' : '✗ Mismatch'}</div>
-      </div>`;
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      throw new Error(data.error || (resp.status === 413 ? 'page image too large for the server' : `server error ${resp.status}`));
+    }
+    if (!data.result) throw new Error('empty response from the extraction server');
+    return data.result;
   }
 
   async function run() {
@@ -2929,82 +2861,44 @@ If no transactions visible on this page return [].`;
     document.getElementById('ex-run-btn').disabled = true;
     document.getElementById('ex-progress-section').style.display = 'block';
     document.getElementById('ex-results-card').style.display = 'none';
-    document.getElementById('ex-recon-card').style.display = 'none';
-    document.getElementById('ex-page-preview').classList.remove('active');
     document.getElementById('ex-log').innerHTML = '';
 
     const skipped = AppState.unlockedFiles.length - pending.length;
-    if (skipped > 0) {
-      _log(`Skipping ${skipped} file${skipped !== 1 ? 's' : ''} already extracted this session.`, 'info');
+    if (skipped > 0) _log(`Skipping ${skipped} file${skipped !== 1 ? 's' : ''} already extracted this session.`, 'info');
+
+    const deps = {
+      pdfjsLib: _pdfjs(),
+      renderPageImage: _renderPage,
+      callVision: _callVision,
+      concurrency: 3,
+      log: _log,
+      customCategories: AppState.customCategories,
+    };
+
+    for (let i = 0; i < pending.length; i++) {
+      const file = pending[i];
+      _setProgress((i / pending.length) * 100, `${file.name} (${i + 1} of ${pending.length})`);
+      const [r] = await TF.runBatch([{ name: file.name, bytes: file.bytes, password: file.password }], deps);
+      r.txns.forEach((t, k) => { t.id = `txn_${_idSeq()}`; r.rows[k].txnId = t.id; });
+      file.result = r;
+      file.extractedTxns = r.txns;
+      file.extracted = r.status !== 'error';
     }
 
-    const totalPages = pending.reduce((s, f) => s + f.pages, 0);
-    let pagesProcessed = 0;
-
-    const pdfjsLib = window['pdfjs-dist/build/pdf'];
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-
-    for (const file of pending) {
-      _log(`Processing ${file.name} (${file.pages} pages)…`, 'info');
-
-      let pdfDoc = null;
-      try {
-        pdfDoc = await pdfjsLib.getDocument({
-          data: file.bytes.slice(0),
-          password: file.password || undefined,
-        }).promise;
-      } catch(err) {
-        _log(`  ✗ Could not open PDF: ${err.message}`, 'err');
-        pagesProcessed += file.pages;
-        continue;
-      }
-
-      const pageNums = Array.from({ length: file.pages }, (_, i) => i + 1);
-      const fileTxns = new Array(file.pages).fill(null).map(() => []);
-      let fileHadError = false;
-
-      for (const p of pageNums) {
-        try {
-          const img = await _renderPage(pdfDoc, p);
-          const imgDataUrl = 'data:image/jpeg;base64,' + img;
-          const txns = await _extractPage(img, file.name, p);
-          fileTxns[p - 1] = txns;
-
-          _showPagePreview(p, file.pages, imgDataUrl, txns);
-
-          pagesProcessed++;
-          _setProgress((pagesProcessed / totalPages) * 100,
-            `${file.name} — page ${p}/${file.pages}`);
-          _log(`  Page ${p}/${file.pages} ✓ ${txns.length} transactions extracted`, 'ok');
-        } catch(err) {
-          fileHadError = true;
-          pagesProcessed++;
-          _log(`  Page ${p}/${file.pages} ✗ ${err.message}`, 'err');
-        }
-      }
-
-      file.extractedTxns = fileTxns.flat().map(t => ({
-        ...t, source_file: file.name, id: `txn_${_idSeq()}`,
-      }));
-      file.extracted = !fileHadError;
-      if (fileHadError) _log(`  ⚠ ${file.name} had page errors — will retry in full next run.`, 'err');
-
-      await pdfDoc.destroy();
-    }
+    // Continuity is checked across EVERY extracted file, not just this run's.
+    TF.continuity(AppState.unlockedFiles.map(f => f.result).filter(r => r && !r.error));
+    AppState.reconResults = AppState.unlockedFiles.map(f => f.result).filter(Boolean).map(_summary);
 
     const allTxns = AppState.unlockedFiles.flatMap(f => f.extractedTxns || []);
-    allTxns.sort((a, b) => a.post_date.localeCompare(b.post_date));
-
+    allTxns.sort((a, b) => (a.post_date || '').localeCompare(b.post_date || ''));
     AppState.extractedData = allTxns;
-
     Review.mergeFromExtractor(allTxns);
     Store.save();
 
     _setProgress(100, 'Complete');
-    _log(`\nDone — ${allTxns.length} total bank transactions across all files. Continue to Reconcile to categorise and commit.`, 'ok');
+    _log(`\nDone — ${allTxns.length} transactions across all files.`, 'ok');
 
-    const months = new Set(allTxns.map(t => t.post_date.slice(0,7)));
+    const months = new Set(allTxns.map(t => (t.post_date || '').slice(0, 7)).filter(Boolean));
     document.getElementById('ex-stat-txns').textContent   = allTxns.length.toLocaleString();
     document.getElementById('ex-stat-files').textContent  = AppState.unlockedFiles.length;
     document.getElementById('ex-stat-months').textContent = months.size;
@@ -3014,11 +2908,128 @@ If no transactions visible on this page return [].`;
     sync();
   }
 
+  // The persistable part of a file result: everything the status card needs.
+  function _summary(r) {
+    return {
+      name: r.name, error: r.error || null, status: r.status, bank: r.bank || 'Unknown',
+      period: r.period || null, pages: r.pages || 0, opening: r.opening ?? null, closing: r.closing ?? null,
+      closingSource: r.closingSource || '', rowSummary: r.rowSummary, counts: r.counts,
+      printed: r.whole ? r.whole.printed : [], continuity: r.continuity || null, problems: r.problems || [],
+      unreadPages: r.unreadPages || [],
+      badRows: (r.rows || []).filter(x => x.ok === false).map(x => ({
+        id: x.txnId, page: x.page, date: x.iso, reference: x.reference, amount: x.amount + (x.fee || 0),
+        balance: x.balance, expected: x.expected, path: x.path,
+      })),
+      msPerPage: r.pages ? Math.round(r.ms / r.pages) : null,
+    };
+  }
+
+  function _money(n) { return n === null || n === undefined ? '—' : fmtZAR(n); }
+  function _period(p) {
+    if (!p || !p.from) return '';
+    return p.from.slice(0, 7) === p.to.slice(0, 7) ? fmtMonth(p.to) : `${fmtMonth(p.from)} – ${fmtMonth(p.to)}`;
+  }
+  function _needsAttention(r) {
+    return !!(r.error || r.status === 'unbalanced' || r.status === 'empty' ||
+      (r.continuity && r.continuity.status === 'break'));
+  }
+
+  function _renderRecon() {
+    const el = document.getElementById('ex-recon');
+    if (!el) return;
+    const list = AppState.reconResults || [];
+    if (!list.length) { el.innerHTML = ''; return; }
+
+    const bad    = list.filter(_needsAttention);
+    const warn   = list.filter(r => !bad.includes(r) && r.status === 'unverified');
+    const rows   = list.reduce((s, r) => s + (r.rowSummary ? r.rowSummary.total : 0), 0);
+    const okRows = list.reduce((s, r) => s + (r.rowSummary ? r.rowSummary.passed : 0), 0);
+    const badRows = list.reduce((s, r) => s + r.badRows.length, 0);
+    const cls = bad.length ? 'bad' : warn.length ? 'warn' : 'ok';
+    const headline = bad.length
+      ? `✗ ${bad.length} of ${list.length} statement${list.length !== 1 ? 's' : ''} need${bad.length === 1 ? 's' : ''} attention` +
+        (badRows ? ` — ${badRows} row${badRows !== 1 ? 's' : ''} don't balance` : '')
+      : warn.length ? `⚠ ${warn.length} statement${warn.length !== 1 ? 's' : ''} could not be fully verified`
+      : `✓ All ${list.length} statement${list.length !== 1 ? 's' : ''} reconciled — ${okRows}/${rows} rows verified`;
+
+    el.innerHTML = `
+      <div class="rc-summary ${cls}">
+        <span>${headline}</span>
+        ${badRows ? `<button class="rc-btn" data-rc-show-bad="1">Show unbalanced rows in Review</button>` : ''}
+      </div>
+      ${list.map(_fileCard).join('')}`;
+  }
+
+  function _fileCard(r) {
+    const cont = r.continuity;
+    const isBad = _needsAttention(r);
+    const cls = isBad ? 'bad' : r.status === 'unverified' ? 'warn' : 'ok';
+    const rs = r.rowSummary || { total: 0, passed: 0, failed: 0, unchecked: 0 };
+    let status;
+    if (r.error) status = `✗ Could not read: ${_esc(r.error)}`;
+    else if (r.status === 'empty') status = '✗ No transactions found';
+    else if ((r.unreadPages || []).length) status = `✗ Page${r.unreadPages.length !== 1 ? 's' : ''} ${r.unreadPages.join(', ')} could not be read`;
+    else if (rs.failed) status = `✗ ${rs.failed} row${rs.failed !== 1 ? 's' : ''} don't balance`;
+    else if (r.status === 'unbalanced') status = '✗ Totals don\'t reconcile';
+    else if (cont && cont.status === 'break') status = '✗ Doesn\'t follow on from the previous statement';
+    else if (r.status === 'unverified') status = `⚠ Unverified — ${rs.passed}/${rs.total} rows checked`;
+    else status = `✓ Reconciled — ${rs.passed}/${rs.total} rows verified`;
+
+    const contTxt = !cont ? '—'
+      : cont.status === 'ok' ? `<span class="yes">✓ Follows on from ${_esc(cont.prev)}</span>`
+      : cont.status === 'break' ? `<span class="no">✗ ${_esc(cont.detail)}</span>`
+      : cont.status === 'gap' ? `${cont.months} month${cont.months !== 1 ? 's' : ''} missing before this statement, so the hand-over balance can't be checked`
+      : cont.status === 'first' ? 'First statement for this account — nothing earlier to compare'
+      : _esc(cont.detail || '—');
+    const printed = (r.printed || []).map(p =>
+      `<span class="${p.ok ? 'yes' : 'no'}">${p.ok ? '✓' : '✗'} ${_esc(p.name)}</span>`).join(' · ') || 'none printed';
+
+    const problems = (r.problems || []).length
+      ? `<ul class="rc-problems">${r.problems.map(p => `<li>${_esc(p)}</li>`).join('')}</ul>` : '';
+    const shown = r.badRows.slice(0, 25);
+    const badTable = shown.length ? `
+      <table class="rc-rows">
+        <thead><tr><th>Page</th><th>Date</th><th>Reference</th><th style="text-align:right">Amount</th>
+          <th style="text-align:right">Statement balance</th><th style="text-align:right">Expected</th><th>Path</th><th></th></tr></thead>
+        <tbody>${shown.map(b => `
+          <tr><td>${b.page}</td><td>${b.date ? fmtDate(b.date) : '—'}</td>
+            <td class="ref" title="${_esc(b.reference)}">${_esc(b.reference)}</td>
+            <td class="num">${_money(b.amount)}</td><td class="num">${_money(b.balance)}</td><td class="num">${_money(b.expected)}</td>
+            <td>${b.path === 'vision' ? 'Vision' : 'Text'}</td>
+            <td>${b.id ? `<button class="rc-btn" data-rc-jump="${_esc(b.id)}">Show row</button>` : ''}</td></tr>`).join('')}
+        </tbody>
+      </table>
+      ${r.badRows.length > shown.length ? `<div class="rc-meta">…and ${r.badRows.length - shown.length} more — use “Show unbalanced rows in Review”.</div>` : ''}` : '';
+
+    const meta = [r.bank, _period(r.period), r.pages ? `${r.pages} page${r.pages !== 1 ? 's' : ''}` : '',
+      r.msPerPage !== null && r.msPerPage !== undefined ? `${r.msPerPage} ms per page` : ''].filter(Boolean).join(' · ');
+    return `
+      <div class="card rc-file ${cls}">
+        <div class="rc-head">
+          <div>
+            <div class="rc-name">${_esc(r.name)}</div>
+            <div class="rc-meta">${_esc(meta)}</div>
+          </div>
+          <span class="rc-status ${cls}">${status}</span>
+        </div>
+        ${r.error ? '' : `
+        <div class="rc-grid">
+          <div class="rc-cell">Opening balance<b>${_money(r.opening)}</b></div>
+          <div class="rc-cell">Closing balance (${_esc(r.closingSource || '—')})<b>${_money(r.closing)}</b></div>
+          <div class="rc-cell">Rows read from text / by AI vision<b>${r.counts.text} / ${r.counts.vision}</b></div>
+          <div class="rc-cell">Printed totals<b style="font-family:var(--font);font-size:13px">${printed}</b></div>
+          <div class="rc-cell" style="grid-column:1/-1">Continuity<b style="font-family:var(--font);font-size:13px">${contTxt}</b></div>
+        </div>`}
+        ${problems}
+        ${badTable}
+      </div>`;
+  }
+
   function openDashboard() {
     App.goto('reconcile');
   }
 
-  return { sync, run, openDashboard, reextract };
+  return { sync, run, openDashboard, reextract, renderRecon: _renderRecon };
 })();
 
 /* ============================================================
@@ -4525,6 +4536,8 @@ const Review = (() => {
   let _filtered    = [];
   let _sourceFilter = '';
   let _catFilter    = '';
+  let _checkFilter  = '';   // '' | 'bad' | 'text' | 'vision'
+  let _flashId      = null; // row to scroll to and highlight after the next render
   let _sortCol     = 'post_date';
   let _sortAsc     = true;
   let _selected    = new Set();   // ids of rows selected via click/ctrl+click/shift+click
@@ -4536,6 +4549,8 @@ const Review = (() => {
     source:    t => t.source || (t.source_file ? t.source_file.replace('.trading','') : 'Bank'),
     category:  t => t.category,
     amount:    t => t.amount,
+    check:     t => t.check === false ? 0 : t.check === true ? 2 : 1,
+    path:      t => t.path || '',
   };
   function _sortRows(rows) {
     const get = SORT_ACCESSORS[_sortCol] || SORT_ACCESSORS.post_date;
@@ -4574,7 +4589,25 @@ const Review = (() => {
   function filter() {
     _sourceFilter = document.getElementById('rv-source-filter')?.value || '';
     _catFilter    = document.getElementById('rv-cat-filter')?.value    || '';
+    _checkFilter  = document.getElementById('rv-check-filter')?.value  || '';
     _render();
+  }
+
+  // Jump to one transaction: clear filters that could hide it, then scroll
+  // it into view and flash it.
+  function focusRow(id) {
+    _sourceFilter = ''; _catFilter = ''; _checkFilter = '';
+    ['rv-source-filter', 'rv-cat-filter', 'rv-check-filter'].forEach(x => { const el = document.getElementById(x); if (el) el.value = ''; });
+    _flashId = String(id);
+    App.goto('review');
+  }
+
+  // Show only the rows that failed the balance check.
+  function showBad() {
+    _sourceFilter = ''; _catFilter = ''; _checkFilter = 'bad';
+    ['rv-source-filter', 'rv-cat-filter'].forEach(x => { const el = document.getElementById(x); if (el) el.value = ''; });
+    const ck = document.getElementById('rv-check-filter'); if (ck) ck.value = 'bad';
+    App.goto('review');
   }
 
   // Deletes every non-locked row from one source (e.g. a statement uploaded
@@ -4646,8 +4679,22 @@ const Review = (() => {
       const src = t.source || t.source_file || 'Bank';
       if (_sourceFilter && src !== _sourceFilter) return false;
       if (_catFilter && t.category !== _catFilter) return false;
+      if (_checkFilter === 'bad' && t.check !== false) return false;
+      if (_checkFilter === 'text' && t.path !== 'text') return false;
+      if (_checkFilter === 'vision' && t.path !== 'vision') return false;
       return true;
     }));
+
+    // Unmissable banner whenever any row doesn't balance.
+    const badCount = AppState.reviewData.filter(t => t.check === false).length;
+    const alertEl = document.getElementById('rv-alert');
+    if (alertEl) alertEl.innerHTML = badCount ? `
+      <div class="rv-alert">
+        <span>✗ ${badCount} row${badCount !== 1 ? 's' : ''} don't balance against the bank's printed running balance. Check them before relying on the totals.</span>
+        ${_checkFilter === 'bad'
+          ? '<button class="rc-btn" data-rv-show-all="1">Show all rows</button>'
+          : '<button class="rc-btn" data-rv-show-bad="1">Show only these rows</button>'}
+      </div>` : '';
 
     // Selection can only ever contain ids still present in the data (e.g.
     // after a commit or a source removal) — drop anything stale.
@@ -4663,6 +4710,8 @@ const Review = (() => {
       { key: 'source',    label: 'Source' },
       { key: 'category',  label: 'Category' },
       { key: 'amount',    label: 'Amount', right: true },
+      { key: 'check',     label: 'Balance check' },
+      { key: 'path',      label: 'Read by' },
     ];
 
     const bulkBar = _selected.size > 0 ? `
@@ -4685,7 +4734,12 @@ const Review = (() => {
             const locked   = t.locked === true;
             const txnId    = String(t.id);
             const selected = _selected.has(txnId);
-            return `<tr data-txnid="${txnId}" class="${locked ? '' : 'rv-row-selectable'} ${selected ? 'rv-row-selected' : ''}">
+            const bad      = t.check === false;
+            const checkCell = t.check === true ? '<td class="rv-td-check ok">✓ Balances</td>'
+              : bad ? `<td class="rv-td-check bad" title="Statement balance ${t.balance != null ? fmtZAR(t.balance) : '—'}; expected ${t.expected != null ? fmtZAR(t.expected) : '—'}">✗ Doesn't balance</td>`
+              : '<td class="rv-td-check na">— Not checked</td>';
+            const pathCell = `<td class="rv-td-path">${t.path === 'vision' ? 'AI vision' : t.path === 'text' ? 'Text' : '—'}</td>`;
+            return `<tr data-txnid="${txnId}" class="${locked ? '' : 'rv-row-selectable'} ${selected ? 'rv-row-selected' : ''} ${bad ? 'rv-row-bad' : ''}">
               <td class="rv-td-date">${fmtDate(t.post_date)}</td>
               <td class="rv-td-ref" title="${t.reference}">${t.reference}</td>
               <td class="rv-td-source">${src}</td>
@@ -4697,6 +4751,7 @@ const Review = (() => {
                 </span>
               </td>
               <td class="rv-td-amount ${t.amount < 0 ? 'neg' : 'pos'}">${fmtZAR(t.amount)}</td>
+              ${checkCell}${pathCell}
             </tr>`;
           }).join('')}
         </tbody>
@@ -4705,6 +4760,12 @@ const Review = (() => {
         <span>${_filtered.length.toLocaleString()} of ${AppState.reviewData.length.toLocaleString()} transactions</span>
         <span></span>
       </div>`;
+
+    if (_flashId) {
+      const tr = wrap.querySelector(`tr[data-txnid="${CSS.escape(_flashId)}"]`);
+      _flashId = null;
+      if (tr) { tr.scrollIntoView({ block: 'center' }); tr.classList.add('rv-row-flash'); }
+    }
   }
 
   // ── Picker ────────────────────────────────────────────────────────────────────
@@ -4834,7 +4895,7 @@ const Review = (() => {
 
   return { render, filter, removeSource, openPicker, sort, selectRow, clearSelection,
            categorizeSelected, mergeFromExtractor, commit,
-           exportForCategorise, importCategorised };
+           exportForCategorise, importCategorised, focusRow, showBad };
 })();
 
 /* ============================================================
@@ -4894,6 +4955,11 @@ function _bindEvents() {
   /* ── Review toolbar (static; table body is delegated below) ── */
   on('rv-source-filter', 'change', () => Review.filter());
   on('rv-cat-filter', 'change', () => Review.filter());
+  on('rv-check-filter', 'change', () => Review.filter());
+  on('rv-alert', 'click', (e) => {
+    if (e.target.closest('[data-rv-show-bad]')) Review.showBad();
+    if (e.target.closest('[data-rv-show-all]')) { const ck = byId('rv-check-filter'); ck.value = ''; Review.filter(); }
+  });
   on('rv-remove-source-btn', 'click', () => Review.removeSource());
   on('rv-export-btn', 'click', () => Review.exportForCategorise());
   on('rv-import-btn', 'click', () => byId('rv-import-input').click());
@@ -4919,6 +4985,11 @@ function _bindEvents() {
   /* ── Extractor ── */
   on('ex-run-btn', 'click', () => Extractor.run());
   on('ex-view-dashboard-btn', 'click', () => Extractor.openDashboard());
+  on('ex-recon', 'click', (e) => {
+    const jump = e.target.closest('[data-rc-jump]');
+    if (jump) { Review.focusRow(jump.dataset.rcJump); return; }
+    if (e.target.closest('[data-rc-show-bad]')) Review.showBad();
+  });
   on('ex-file-list', 'click', (e) => {
     const btn = e.target.closest('.ex-reextract-btn');
     if (btn) Extractor.reextract(Number(btn.dataset.idx));
@@ -4987,7 +5058,6 @@ function _bindEvents() {
   });
 
   /* ── Settings ── */
-  on('set-api-key', 'input', function () { Settings.saveKey(this.value); });
   on('set-clear-btn', 'click', () => Settings.clearData());
   on('set-export-session-btn', 'click', () => Store.exportSidecar());
   on('set-import-session-input', 'change', function () { Settings.importSidecar(this); });
