@@ -2592,9 +2592,12 @@ const Unvault = (() => {
         let pdfDoc;
         try {
           // slice(0) — pdf.js transfers the buffer, so give it its own copy
+          // isEvalSupported:false — mitigates CVE-2024-4367 (GHSA-wgrm-67xf-hhpq):
+          // pdf.js 3.11.174 can run script from a malicious PDF's font otherwise.
           pdfDoc = await pdfjsLib.getDocument({
             data: bytes.slice(0),
             password: password || undefined,
+            isEvalSupported: false,
           }).promise;
         } catch(e) {
           // pdf.js reports these as PasswordException with a numeric code:
@@ -2699,7 +2702,7 @@ async function loadDemo() {
     const pdfjsLib = window['pdfjs-dist/build/pdf'];
     pdfjsLib.GlobalWorkerOptions.workerSrc =
       'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    const pdfDoc = await pdfjsLib.getDocument({ data: pdfBytes.slice(0) }).promise;
+    const pdfDoc = await pdfjsLib.getDocument({ data: pdfBytes.slice(0), isEvalSupported: false }).promise;
     const pageCount = pdfDoc.numPages;
     await pdfDoc.destroy();
 
