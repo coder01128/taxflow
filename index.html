@@ -1559,6 +1559,757 @@ body {
 
 <div class="db-monthly-tooltip" id="monthly-tooltip"></div>
 
+<script id="tf-core">
+/* ============================================================
+   TF CORE — text-first statement extraction, reconciliation,
+   categorisation and the per-file pipeline. NO DOM ACCESS in this
+   block: it runs unchanged in the browser and in the Node test
+   harness (tests/run-harness.js extracts it from index.html).
+   Exposes globalThis.TF.
+   ============================================================ */
+(function (root) {
+  'use strict';
+
+  /* ---------- character decoding ---------- */
+  // Windows-1252 bytes 0x80–0x9F (the rest of 0x00–0xFF is Latin-1).
+  const CP1252 = {
+    0x80: '\u20AC', 0x82: '\u201A', 0x83: '\u0192', 0x84: '\u201E', 0x85: '\u2026', 0x86: '\u2020',
+    0x87: '\u2021', 0x88: '\u02C6', 0x89: '\u2030', 0x8A: '\u0160', 0x8B: '\u2039', 0x8C: '\u0152',
+    0x8E: '\u017D', 0x91: '\u2018', 0x92: '\u2019', 0x93: '\u201C', 0x94: '\u201D', 0x95: '\u2022',
+    0x96: '\u2013', 0x97: '\u2014', 0x98: '\u02DC', 0x99: '\u2122', 0x9A: '\u0161', 0x9B: '\u203A',
+    0x9C: '\u0153', 0x9E: '\u017E', 0x9F: '\u0178',
+  };
+  function cp1252(code) {
+    if (code < 0x80 || code > 0x9F) return String.fromCharCode(code);
+    return CP1252[code] || '\uFFFD';
+  }
+
+  // What a real statement is full of: dates and money amounts (strong
+  // signals), and words (weak: scrambled digits can look like letters,
+  // e.g. Capitec's "0"→"O", so words only break ties).
+  const SANE_STRONG = /\b\d{1,2}[/ .-](?:\d{1,2}|[A-Za-z]{3})[/ .-]\d{2,4}\b|\d+[.,]\d{2}\b/g;
+  const SANE_WORD = /\b[A-Za-z]{4,}\b/g;
+  function sanity(text) {
+    return (text.match(SANE_STRONG) || []).length * 10 + (text.match(SANE_WORD) || []).length * 0.1;
+  }
+
+  function decodeChar(ch, mode) {
+    if (mode === 'encoding' && !ch.composite && ch.code < 256) return cp1252(ch.code);
+    return ch.uni ? ch.uni : '\uFFFD';
+  }
+
+  /* ---------- reading: every drawn character, in drawing order ----------
+     Walks pdf.js's operator list and replays the text state machine
+     (same maths as pdf.js's canvas showText), so every glyph gets its
+     true page position plus BOTH its raw character code and pdf.js's
+     unicode value. The raw code is what lets us read fonts whose
+     /ToUnicode map is wrong (Capitec 2024: every code mapped to code+31). */
+  const IDENTITY = [1, 0, 0, 1, 0, 0];
+  function mul(m1, m2) {
+    return [
+      m1[0] * m2[0] + m1[2] * m2[1], m1[1] * m2[0] + m1[3] * m2[1],
+      m1[0] * m2[2] + m1[2] * m2[3], m1[1] * m2[2] + m1[3] * m2[3],
+      m1[0] * m2[4] + m1[2] * m2[5] + m1[4], m1[1] * m2[4] + m1[3] * m2[5] + m1[5],
+    ];
+  }
+  function apply(p, m) { return [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]]; }
+
+  async function readPage(pdfjsLib, page) {
+    const OPS = pdfjsLib.OPS;
+    const ol = await page.getOperatorList();
+    const chars = [];
+    let images = 0;
+    const fontInfo = {};
+    function font(ref) {
+      if (!fontInfo[ref]) {
+        let f = null;
+        try { f = page.commonObjs.get(ref); } catch (e) { f = null; }
+        fontInfo[ref] = {
+          name: (f && f.name) || ref,
+          matrix: (f && f.fontMatrix) || [0.001, 0, 0, 0.001, 0, 0],
+          composite: !!(f && f.composite),
+        };
+      }
+      return fontInfo[ref];
+    }
+    const fresh = () => ({
+      ctm: IDENTITY.slice(), tm: IDENTITY.slice(), x: 0, y: 0, lineX: 0, lineY: 0,
+      font: null, fontSize: 0, fontDir: 1, charSpacing: 0, wordSpacing: 0, hScale: 1, leading: 0, rise: 0,
+    });
+    let st = fresh();
+    const stack = [];
+    const clone = (s) => Object.assign({}, s, { ctm: s.ctm.slice(), tm: s.tm.slice() });
+
+    function moveText(x, y) { st.x = st.lineX += x; st.y = st.lineY += y; }
+    function showText(glyphs) {
+      if (!st.font) return;
+      const f = font(st.font);
+      const m = mul(st.ctm, st.tm);
+      const widthScale = st.fontSize * f.matrix[0];
+      const hs = st.hScale * st.fontDir;
+      const sizeDev = st.fontSize * Math.hypot(m[2], m[3]);
+      let x = 0;
+      for (const g of glyphs) {
+        if (typeof g === 'number') { x += (-g * st.fontSize) / 1000; continue; }
+        const spacing = (g.isSpace ? st.wordSpacing : 0) + st.charSpacing;
+        const w = (g.width || 0) * widthScale;
+        const p0 = apply([st.x + x * hs, st.y + st.rise], m);
+        const p1 = apply([st.x + (x + w) * hs, st.y + st.rise], m);
+        chars.push({
+          x0: p0[0], x1: p1[0], y: p0[1], size: sizeDev,
+          code: g.originalCharCode, uni: g.unicode, font: f.name, composite: f.composite,
+        });
+        x += w + spacing * st.fontDir;
+      }
+      st.x += x * hs;
+    }
+
+    for (let i = 0; i < ol.fnArray.length; i++) {
+      const fn = ol.fnArray[i], a = ol.argsArray[i];
+      switch (fn) {
+        case OPS.save: stack.push(clone(st)); break;
+        case OPS.restore: if (stack.length) st = stack.pop(); break;
+        case OPS.transform: st.ctm = mul(st.ctm, a); break;
+        case OPS.paintFormXObjectBegin:
+          stack.push(clone(st));
+          if (Array.isArray(a[0]) && a[0].length === 6) st.ctm = mul(st.ctm, a[0]);
+          break;
+        case OPS.paintFormXObjectEnd: if (stack.length) st = stack.pop(); break;
+        case OPS.beginText: st.tm = IDENTITY.slice(); st.x = st.lineX = 0; st.y = st.lineY = 0; break;
+        case OPS.setTextMatrix: {
+          const v = Array.isArray(a[0]) ? a[0] : a;
+          st.tm = [v[0], v[1], v[2], v[3], v[4], v[5]]; st.x = st.lineX = 0; st.y = st.lineY = 0; break;
+        }
+        case OPS.moveText: moveText(a[0], a[1]); break;
+        case OPS.setLeadingMoveText: st.leading = -a[1]; moveText(a[0], a[1]); break;
+        case OPS.nextLine: moveText(0, st.leading); break;
+        case OPS.setLeading: st.leading = -a[0]; break;
+        case OPS.setCharSpacing: st.charSpacing = a[0]; break;
+        case OPS.setWordSpacing: st.wordSpacing = a[0]; break;
+        case OPS.setHScale: st.hScale = a[0] / 100; break;
+        case OPS.setTextRise: st.rise = a[0]; break;
+        case OPS.setFont: {
+          let size = a[1];
+          st.fontDir = size < 0 ? -1 : 1; st.fontSize = Math.abs(size); st.font = a[0]; break;
+        }
+        case OPS.showText: case OPS.showSpacedText: showText(a[0]); break;
+        case OPS.nextLineShowText: moveText(0, st.leading); showText(a[0]); break;
+        case OPS.nextLineSetSpacingShowText:
+          st.wordSpacing = a[0]; st.charSpacing = a[1]; moveText(0, st.leading); showText(a[2]); break;
+        default:
+          if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject ||
+              fn === OPS.paintImageMaskXObject || fn === OPS.paintJpegXObject ||
+              fn === OPS.paintImageXObjectRepeat || fn === OPS.paintInlineImageXObjectGroup) images++;
+      }
+    }
+    const [vx0, vy0, vx1, vy1] = page.view;
+    return { chars, images, width: vx1 - vx0, height: vy1 - vy0 };
+  }
+
+  /* Decide, per font, whether to trust pdf.js's unicode (ToUnicode) or the
+     font's own byte encoding, by which reading looks more like a statement. */
+  function chooseDecoding(pages) {
+    const modes = {};
+    const fonts = new Set();
+    pages.forEach(p => p.chars.forEach(c => fonts.add(c.font)));
+    for (const f of fonts) {
+      const sample = [];
+      pages.slice(0, 2).forEach(p => p.chars.forEach(c => { if (c.font === f) sample.push(c); }));
+      const tUni = sample.map(c => decodeChar(c, 'unicode')).join('');
+      const tEnc = sample.map(c => decodeChar(c, 'encoding')).join('');
+      modes[f] = sanity(tEnc) > 1.5 * sanity(tUni) + 2 ? 'encoding' : 'unicode';
+    }
+    pages.forEach(p => p.chars.forEach(c => { c.t = decodeChar(c, modes[c.font]); }));
+    return modes;
+  }
+
+  function readableRatio(page) {
+    if (!page.chars.length) return 0;
+    let ok = 0;
+    for (const c of page.chars) {
+      // non-breaking spaces are normal text (Capitec thousands separator)
+      if (c.t && c.t !== '\uFFFD' && (/^[\x20-\x7E\u00A0-\uFFFC]+$/.test(c.t))) ok++;
+    }
+    return ok / page.chars.length;
+  }
+
+  /* ---------- runs and lines ---------- */
+  // Join consecutive drawn characters into runs. A new run starts when the
+  // next character is not directly to the right on the same baseline.
+  function pageRuns(page, gapFactor = 0.6) {
+    const runs = [];
+    let cur = null;
+    for (const ch of page.chars) {
+      const t = ch.t;
+      if (cur) {
+        const sameLine = Math.abs(ch.y - cur.y) < 0.5;
+        const gap = ch.x0 - cur.x1;
+        if (sameLine && gap >= -0.5 && gap <= gapFactor * Math.max(ch.size, 1)) {
+          if (gap > 0.25 * ch.size && !cur.text.endsWith(' ')) { cur.text += ' '; cur.xs.push(ch.x0); cur.xe.push(ch.x0); }
+          for (const u of t) { cur.text += u; cur.xs.push(ch.x0); cur.xe.push(ch.x1); }
+          cur.x1 = ch.x1;
+          continue;
+        }
+        runs.push(cur);
+      }
+      cur = { x0: ch.x0, x1: ch.x1, y: ch.y, size: ch.size, text: '', xs: [], xe: [] };
+      for (const u of t) { cur.text += u; cur.xs.push(ch.x0); cur.xe.push(ch.x1); }
+    }
+    if (cur) runs.push(cur);
+    // collapse whitespace while keeping per-character x positions aligned
+    const out = [];
+    for (const r of runs) {
+      let text = '', xs = [], xe = [];
+      for (let i = 0; i < r.text.length; i++) {
+        const c = /\s/.test(r.text[i]) ? ' ' : r.text[i];
+        if (c === ' ' && (text === '' || text.endsWith(' '))) continue;
+        text += c; xs.push(r.xs[i]); xe.push(r.xe[i]);
+      }
+      while (text.endsWith(' ')) { text = text.slice(0, -1); xs.pop(); xe.pop(); }
+      if (text) out.push({ x0: xs[0], x1: Math.max(...xe), y: r.y, size: r.size, text, xs, xe });
+    }
+    return out;
+  }
+
+  function groupLines(runs, tol = 2.5) {
+    const lines = [];
+    const sorted = runs.slice().sort((a, b) => b.y - a.y);
+    for (const r of sorted) {
+      const ln = lines.find(l => Math.abs(l.y - r.y) <= tol);
+      if (ln) ln.runs.push(r); else lines.push({ y: r.y, runs: [r] });
+    }
+    lines.forEach(l => l.runs.sort((a, b) => a.x0 - b.x0));
+    return lines;
+  }
+
+  /* ---------- parsing ---------- */
+  const SEP = "[ ,\\u00a0\\u202f']";
+  const MONEY_SRC = "(?<![\\w.,/])(?<sign>[+-]|-\\s)?\\s?R?\\s?(?<num>\\d{1,3}(?:" + SEP + "\\d{3})*|\\d+)[.](?<dec>\\d{2})" +
+    "(?!\\d)(?:\\s?(?<crdr>Cr|Dr|CR|DR)\\b)?(?<star>\\s?\\*)?";
+  const moneyRx = () => new RegExp(MONEY_SRC, 'g');
+  const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  const DATE_SRC = '\\b(?:\\d{1,2}[/.-]\\d{1,2}[/.-]\\d{2,4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}\\s(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*(?:\\s\\d{2,4})?)\\b';
+  const dateRx = () => new RegExp(DATE_SRC, 'gi');
+
+  const ROLE_WORDS = [ // order matters: more specific first
+    ['balance', 'balance'],
+    ['fees', 'fees?\\b|charges?\\b'],
+    ['debit', 'debits?\\b|withdrawals?|money out|paid out'],
+    ['credit', 'credits?\\b|deposits?|money in|paid in'],
+    ['amount', 'amount'],
+    ['date', 'date'],
+    ['desc', 'description|narrative|details|transaction'],
+  ];
+  const OPEN_RX = /opening balance|balance brought forward|brought forward|balance b\/f/i;
+  const CLOSE_RX = /closing balance|balance at end|balance c\/f/i;
+  const CARRIED_RX = /carried forward/i;
+  const TOTAL_RX = {
+    credits: /total (?:funds received\/)?credits|total credits|total deposits|money in/i,
+    debits: /total (?:funds used\/)?debits|total debits|total withdrawals|money out/i,
+    fees: /fee total|total charges|bank charge\(s\) \(total\)/i,
+  };
+  const BANKS = [['Capitec', /capitec/i], ['Nedbank', /nedbank/i], ['FNB', /first national bank|\bfnb\b/i],
+    ['ABSA', /\babsa\b/i], ['Standard Bank', /standard bank/i], ['Investec', /investec/i],
+    ['Discovery Bank', /discovery bank/i], ['TymeBank', /tymebank/i], ['African Bank', /african bank/i]];
+
+  function moneyValue(m) {
+    const g = m.groups;
+    let num = parseFloat(g.num.replace(new RegExp(SEP, 'g'), '') + '.' + g.dec);
+    const sign = (g.sign || '').trim();
+    const crdr = (g.crdr || '').toLowerCase();
+    if (sign === '-' || crdr === 'dr') num = -num;
+    return { v: num, explicit: !!sign || !!crdr, star: !!g.star };
+  }
+
+  function lineTokens(line) {
+    const monies = [], dates = [];
+    for (const r of line.runs) {
+      const txt = r.text;
+      for (const m of txt.matchAll(moneyRx())) {
+        if (txt.slice(m.index + m[0].length, m.index + m[0].length + 1) === '%') continue;
+        const mv = moneyValue(m);
+        const s = m.index + (m[0].length - m[0].trimStart().length);
+        const e = m.index + m[0].trimEnd().length - 1;
+        monies.push({ x0: r.xs[s], x1: r.xe[e], v: mv.v, explicit: mv.explicit, star: mv.star, raw: m[0] });
+      }
+      for (const m of txt.matchAll(dateRx())) dates.push({ x0: r.xs[m.index], text: m[0] });
+    }
+    return { monies, dates };
+  }
+
+  function findHeader(line) {
+    const cols = [];
+    for (const r of line.runs) {
+      let words = r.text;
+      for (const [role, src] of ROLE_WORDS) {
+        const snapshot = words;
+        for (const m of snapshot.matchAll(new RegExp(src, 'gi'))) {
+          const e = m.index + m[0].length - 1;
+          cols.push({ role, x0: r.xs[m.index], x1: r.xe[e] });
+          words = words.slice(0, m.index) + ' '.repeat(m[0].length) + words.slice(m.index + m[0].length);
+        }
+      }
+    }
+    const roles = new Set(cols.map(c => c.role));
+    if (roles.has('balance') && (roles.has('amount') || roles.has('debit') || roles.has('credit'))) return cols;
+    return null;
+  }
+
+  function assign(money, cols) {
+    const mcols = cols.filter(c => ['balance', 'fees', 'debit', 'credit', 'amount'].includes(c.role));
+    const over = mcols.filter(c => !(money.x1 < c.x0 - 2 || money.x0 > c.x1 + 2));
+    if (over.length === 1) return over[0].role;
+    const pool = over.length ? over : mcols;
+    return pool.reduce((best, c) => Math.abs(c.x1 - money.x1) < Math.abs(best.x1 - money.x1) ? c : best).role;
+  }
+
+  function isoDate(d, fallbackYear) {
+    let m = d.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/);
+    if (m) {
+      let y = +m[3]; if (y < 100) y += 2000;
+      return `${y}-${String(m[2]).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+    }
+    m = d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m) return d;
+    m = d.match(/^(\d{1,2})\s([A-Za-z]{3})[a-z]*(?:\s(\d{2,4}))?$/);
+    if (m) {
+      const mo = MONTHS.indexOf(m[2].toLowerCase()) + 1;
+      let y = m[3] ? +m[3] : fallbackYear;
+      if (y && y < 100) y += 2000;
+      if (mo > 0 && y) return `${y}-${String(mo).padStart(2, '0')}-${String(m[1]).padStart(2, '0')}`;
+    }
+    return null;
+  }
+
+  function lastDigits(s) { const d = (s || '').replace(/\D/g, ''); return d.length >= 6 ? d.slice(-4) : null; }
+
+  /* Account identity (for continuity only): an "account no/number" label
+     with a 6+ digit value on the same line, or directly below it. Only the
+     last 4 digits are kept. */
+  function findAccountKey(pageLines) {
+    const LABEL = /account\s*(?:no\.?|number|nr\.?)/i;
+    for (const lines of pageLines.slice(0, 1)) {
+      for (let i = 0; i < lines.length; i++) {
+        const ln = lines[i];
+        for (const r of ln.runs) {
+          const lm = r.text.match(LABEL);
+          if (!lm) continue;
+          const after = r.text.slice(lm.index + lm[0].length).match(/\d[\d -]{5,}\d/);
+          if (after) return lastDigits(after[0]);
+          const right = ln.runs.find(o => o.x0 > r.x0 && /^\d[\d -]{5,}\d$/.test(o.text.trim()));
+          if (right) return lastDigits(right.text);
+          const below = (lines[i + 1] || { runs: [] }).runs.find(o => Math.abs(o.x0 - r.x0) < 12 && /^\d[\d -]{5,}\d$/.test(o.text.trim()));
+          if (below) return lastDigits(below.text);
+        }
+      }
+    }
+    return null;
+  }
+
+  /* Parse decoded pages into rows. pages: [{chars(with .t), images, width, height}] */
+  function parsePages(pages) {
+    let opening = null, closingPrinted = null, cols = null, orphanMoneyLines = 0;
+    const totals = {}, rows = [], skippedDated = [], pageStats = [], allText = [], pageLines = [];
+    let headerSeen = false;
+    pages.forEach((pg, idx) => {
+      const pi = idx + 1;
+      const lines = groupLines(pageRuns(pg));
+      pageLines.push(lines);
+      const before = rows.length;
+      let lastRowY = null;
+      for (const ln of lines) {
+        const text = ln.runs.map(r => r.text).join(' ');
+        allText.push(text);
+        const h = findHeader(ln);
+        if (h) { cols = h; headerSeen = true; continue; }
+        const { monies, dates } = lineTokens(ln);
+        if (monies.length) {
+          if (OPEN_RX.test(text) && opening === null) { opening = monies[monies.length - 1].v; continue; }
+          if (CLOSE_RX.test(text)) { closingPrinted = monies[monies.length - 1].v; continue; }
+          for (const [k, rx] of Object.entries(TOTAL_RX)) {
+            const lm = text.match(rx);
+            if (lm && !(k in totals)) {
+              const after = moneyRx(); after.lastIndex = lm.index + lm[0].length;
+              const am = after.exec(text);
+              if (am) totals[k] = Math.abs(moneyValue(am).v);
+            }
+          }
+        }
+        if (OPEN_RX.test(text) || CARRIED_RX.test(text)) continue;
+        if (!cols) continue;
+        const descCols = cols.filter(c => c.role === 'desc').map(c => c.x0);
+        const descX = descCols.length ? Math.min(...descCols) : 1e6;
+        const firstMoneyX = Math.min(...cols.filter(c => ['fees', 'debit', 'credit', 'amount', 'balance'].includes(c.role)).map(c => c.x0));
+        const rowDate = dates.filter(d => d.x0 < descX - 1);
+        const inCols = monies.filter(m => m.x1 > firstMoneyX - 5);
+        if (rowDate.length && inCols.length) {
+          const row = { page: pi, date: rowDate[0].text, trans_date_raw: rowDate[1] ? rowDate[1].text : null,
+            desc: text, amount: 0, fee: 0, balance: null, star: 0, nMoney: 0, path: 'text' };
+          for (const m of inCols) {
+            const role = assign(m, cols);
+            const v = m.v;
+            if (role === 'balance') row.balance = v;
+            else if (role === 'fees') row.fee += m.explicit ? v : -Math.abs(v);
+            else if (role === 'debit') {
+              row.amount += (m.explicit && v < 0) ? v : -Math.abs(v);
+              if (m.star) row.star -= Math.abs(v);   // "*" after a debit = bank fee (Nedbank); cross-check only
+            } else if (role === 'credit') row.amount += m.explicit ? v : Math.abs(v);
+            else row.amount += v;
+            row.nMoney++;
+          }
+          row.amount = round2(row.amount); row.fee = round2(row.fee);
+          // reference: the non-money text, minus everything up to the last date
+          let ref = ln.runs.filter(r => r.x1 < firstMoneyX - 5).map(r => r.text).join(' ');
+          const ds = [...ref.matchAll(dateRx())];
+          if (ds.length) { const last = ds[ds.length - 1]; ref = ref.slice(last.index + last[0].length); }
+          row.reference = ref.trim();
+          rows.push(row);
+          lastRowY = ln.y;
+        } else if (rowDate.length && !inCols.length) {
+          skippedDated.push({ page: pi });
+        } else if (inCols.length && !rowDate.length) {
+          if (Object.values(TOTAL_RX).some(rx => rx.test(text)) || /VAT/.test(text)) continue;
+          orphanMoneyLines++;
+        } else if (rows.length && !monies.length && !dates.length && rows[rows.length - 1].page === pi &&
+                   lastRowY !== null && lastRowY - ln.y <= 2.2 * (ln.runs[0].size || 9)) {
+          // description continuation line directly under a row
+          const r = rows[rows.length - 1];
+          r.desc += ' | ' + text;
+          r.reference = (r.reference + ' ' + ln.runs.filter(x => x.x1 < firstMoneyX - 5).map(x => x.text).join(' ')).trim();
+          lastRowY = ln.y;
+        }
+      }
+      pageStats.push({ page: pi, rows: rows.length - before, readable: readableRatio(pg), chars: pg.chars.length, images: pg.images });
+    });
+
+    const full = allText.join(' ');
+    const bankHit = BANKS.find(([, rx]) => rx.test(full));
+    const yearHint = (() => { for (const r of rows) { const iso = isoDate(r.date); if (iso) return +iso.slice(0, 4); } return null; })();
+    rows.forEach(r => {
+      r.iso = isoDate(r.date, yearHint);
+      r.trans_iso = r.trans_date_raw ? isoDate(r.trans_date_raw, yearHint) : null;
+    });
+    return {
+      rows, opening, closingPrinted, totals, skippedDated, orphanMoneyLines, pageStats, headerSeen,
+      bank: bankHit ? bankHit[0] : 'Unknown', accountKey: findAccountKey(pageLines),
+    };
+  }
+
+  function round2(n) { return Math.round(n * 100) / 100; }
+
+  /* ---------- reconciliation ---------- */
+  // Per row: previous balance + amount + fee = printed balance.
+  // If no opening balance was found, the first row seeds the chain (unverified).
+  function checkRows(opening, rows) {
+    let bal = opening;
+    for (const r of rows) {
+      r.expected = null;
+      if (bal === null || bal === undefined) {
+        r.ok = null;
+        if (r.balance !== null) bal = r.balance;
+        continue;
+      }
+      if (r.balance === null || r.balance === undefined) {
+        r.ok = null;
+        bal = round2(bal + r.amount + r.fee);
+        continue;
+      }
+      const exp = round2(bal + r.amount + r.fee);
+      r.expected = exp;
+      r.ok = Math.abs(exp - r.balance) < 0.005;
+      bal = r.balance;
+    }
+    return {
+      total: rows.length,
+      passed: rows.filter(r => r.ok === true).length,
+      failed: rows.filter(r => r.ok === false).length,
+      unchecked: rows.filter(r => r.ok === null).length,
+    };
+  }
+
+  function wholeStatement(opening, rows, closingPrinted, totals) {
+    const credits = round2(rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0));
+    const debits = round2(-rows.filter(r => r.amount < 0).reduce((s, r) => s + r.amount, 0));
+    const fees = round2(-rows.reduce((s, r) => s + r.fee, 0));
+    const starFees = round2(-rows.reduce((s, r) => s + (r.star || 0), 0));
+    const lastBal = [...rows].reverse().find(r => r.balance !== null);
+    const closing = closingPrinted !== null ? closingPrinted : (lastBal ? lastBal.balance : null);
+    const computed = opening !== null ? round2(opening + credits - debits - fees) : null;
+    const ok = computed !== null && closing !== null && Math.abs(computed - closing) < 0.005;
+    // Banks differ on whether printed "total debits" includes fees, and on
+    // whether fees sit in their own column (fee field) or are marked inside
+    // the debit column (Nedbank "*", counted in starFees). Accept either.
+    const near = (a, b) => Math.abs(Math.abs(a) - b) < 0.005;
+    const printed = [];
+    for (const [k, v] of Object.entries(totals || {})) {
+      const options = k === 'credits' ? [credits]
+        : k === 'debits' ? [debits, round2(debits + fees)]
+        : [round2(fees + starFees)];
+      const hit = options.find(o => near(o, v));
+      printed.push({ name: k, printed: v, extracted: hit !== undefined ? hit : options[0], ok: hit !== undefined });
+    }
+    return { credits, debits, fees, computed, closing, closingSource: closingPrinted !== null ? 'printed' : 'last row balance',
+      ok: ok && printed.every(p => p.ok), balanceOk: ok, printed };
+  }
+
+  function monthIndex(iso) { return iso ? (+iso.slice(0, 4)) * 12 + (+iso.slice(5, 7)) - 1 : null; }
+
+  /* Continuity across a batch: for each account (bank + account key), in date
+     order, a statement's opening balance must equal the previous statement's
+     closing balance when the two are consecutive. */
+  function continuity(results) {
+    const groups = {};
+    results.forEach(r => {
+      if (!r.period || !r.period.from) { r.continuity = { status: 'unknown', detail: 'No dated rows' }; return; }
+      const k = r.bank + '|' + (r.accountKey || '?');
+      (groups[k] = groups[k] || []).push(r);
+    });
+    Object.values(groups).forEach(list => {
+      list.sort((a, b) => a.period.from.localeCompare(b.period.from));
+      list.forEach((r, i) => {
+        if (i === 0) { r.continuity = { status: 'first', detail: 'First statement for this account in this batch' }; return; }
+        const prev = list[i - 1];
+        const gap = monthIndex(r.period.from) - monthIndex(prev.period.to);
+        if (gap > 1) {
+          r.continuity = { status: 'gap', prev: prev.name, months: gap - 1,
+            detail: `${gap - 1} month(s) missing after ${prev.name} — continuity can't be checked` };
+          return;
+        }
+        if (prev.closing === null || r.opening === null) {
+          r.continuity = { status: 'unknown', prev: prev.name, detail: 'Opening or closing balance not found' };
+          return;
+        }
+        const ok = Math.abs(prev.closing - r.opening) < 0.005;
+        r.continuity = { status: ok ? 'ok' : 'break', prev: prev.name, prevClosing: prev.closing, opening: r.opening,
+          detail: ok ? `Opening balance matches the closing balance of ${prev.name}`
+                     : `Opening balance ${r.opening.toFixed(2)} ≠ closing balance ${prev.closing.toFixed(2)} of ${prev.name}` };
+      });
+    });
+    return results;
+  }
+
+  /* ---------- categorisation (deterministic keyword rules) ---------- */
+  const CATEGORIES = [
+    'ATM / Cash', 'Clothing & Apparel', 'Dining Out', "Directors' & Members' Loans", 'Entertainment',
+    'Freelance Income', 'Fuel', 'Groceries', 'Home & Maintenance', 'Insurance', 'Investment Income',
+    'Medical', 'Mobile & Data', 'Salary / Income', 'Subscriptions', 'Trading & Evaluation Fees',
+    'Trading Capital Drawdown', 'Trading P&L', 'Transfers', 'Transport & Rides', 'Uncategorised', 'Utilities',
+  ];
+  // First match wins, so more specific keywords come first
+  // (DISCOVERY HEALTH before DISCOVERY, UBER EATS before UBER).
+  const CATEGORY_RULES = [
+    ['Medical', ['DISCOVERY HEALTH', 'DISCHEM', 'CLICKS', 'NETCARE', 'MEDICLINIC']],
+    ['Dining Out', ['UBER EATS', 'MR DELIVERY', 'NANDOS', 'OCEAN BASKET', 'STEERS', 'KFC', 'WIMPY']],
+    ['Groceries', ['WOOLWORTHS FOOD', 'CHECKERS', 'PICK N PAY', 'SPAR', 'SHOPRITE']],
+    ['Fuel', ['ENGEN', 'BP', 'SHELL', 'SASOL', 'ASTRON']],
+    ['Subscriptions', ['NETFLIX', 'SHOWMAX', 'DSTV']],
+    ['Utilities', ['CITY POWER', 'POWERTIME', 'ESKOM', 'RATES']],
+    ['Insurance', ['OLD MUTUAL', 'DISCOVERY', 'MIWAY', 'OUTSURANCE']],
+    ['Trading & Evaluation Fees', ['TOPSTEP', 'FTMO', 'FUNDED TRADER']],
+    ['Trading Capital Drawdown', ['PERESEC', 'PEREGRINE']],
+    ['Mobile & Data', ['VODACOM', 'MTN', 'TELKOM', 'RAIN', 'CELL C']],
+    ['Transport & Rides', ['UBER', 'BOLT', 'GAUTRAIN']],
+    ['ATM / Cash', ['CASH WITHDRAWAL', 'ATM']],
+    ['Salary / Income', ['SALARY', 'WAGES', 'PAYROLL']],
+  ];
+  const RULE_RX = CATEGORY_RULES.map(([cat, words]) =>
+    [cat, new RegExp('(?<![A-Z0-9])(?:' + words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/ /g, '\\s+')).join('|') + ')(?![A-Z0-9])', 'i')]);
+  function categorise(reference) {
+    const ref = String(reference || '').toUpperCase();
+    for (const [cat, rx] of RULE_RX) if (rx.test(ref)) return cat;
+    return 'Uncategorised';
+  }
+  function validCategory(cat, custom) {
+    return CATEGORIES.includes(cat) || (custom || []).includes(cat) ? cat : 'Uncategorised';
+  }
+
+  /* ---------- vision rows → parser rows ---------- */
+  function num(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'number') return isFinite(v) ? v : null;
+    const s = String(v).replace(/[R\s,\u00a0]/g, '');
+    const n = parseFloat(s);
+    return isFinite(n) ? n : null;
+  }
+  function visionToRows(json, pageNum) {
+    const list = Array.isArray(json) ? json : (json && Array.isArray(json.transactions) ? json.transactions : null);
+    if (!list) throw new Error('Vision response has no transactions list');
+    return list.map(t => {
+      const iso = isoDate(String(t.post_date || '')) || (String(t.post_date || '').match(/^\d{4}-\d{2}-\d{2}$/) ? t.post_date : null);
+      return {
+        page: pageNum, date: t.post_date || '', iso, trans_iso: t.trans_date ? isoDate(String(t.trans_date)) : null,
+        desc: t.reference || '', reference: t.reference || '',
+        amount: round2(num(t.amount) || 0), fee: round2(-Math.abs(num(t.fee) || 0)),
+        balance: num(t.balance), star: 0, nMoney: 0, path: 'vision',
+      };
+    });
+  }
+
+  /* ---------- pipeline: one file ----------
+     deps: {
+       pdfjsLib,
+       renderPageImage(pdfPage) -> Promise<base64 JPEG>,
+       callVision(base64, {page}) -> Promise<{opening_balance?, transactions:[...]}>,
+       concurrency (default 3),
+       log(msg, type),
+       transformPages(pages) (test hook: e.g. blank a page's text),
+       forceVisionPages: Set<pageNumber> (test hook),
+     } */
+  async function processFile(file, deps) {
+    const t0 = Date.now();
+    const log = deps.log || (() => {});
+    const doc = await deps.pdfjsLib.getDocument(Object.assign({
+      data: file.bytes.slice(0), password: file.password || undefined, isEvalSupported: false,
+    }, deps.docOptions || {})).promise;
+    const pdfPages = [];
+    const pages = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const p = await doc.getPage(i);
+      pdfPages.push(p);
+      pages.push(await readPage(deps.pdfjsLib, p));
+    }
+    if (deps.transformPages) deps.transformPages(pages);
+    const fontModes = chooseDecoding(pages);
+    const parsed = parsePages(pages);
+    const readMs = Date.now() - t0;
+
+    let rows = parsed.rows;
+    let opening = parsed.opening;
+    checkRows(opening, rows);
+
+    const pageInfo = parsed.pageStats.map(ps => ({
+      page: ps.page, chars: ps.chars, readable: ps.readable, textRows: ps.rows,
+      path: ps.chars === 0 ? 'none' : 'text', visionTried: false, visionError: null, attempts: 0,
+    }));
+    const forced = deps.forceVisionPages || new Set();
+    const limit = Math.max(1, deps.concurrency || 3);
+
+    // Sends a set of pages to vision, at most `limit` at a time; a failed page
+    // is retried once on its own. Then merges page by page, keeping vision rows
+    // only when they balance at least as well as the text rows they replace.
+    async function visionRound(pageNums, why) {
+      const queue = [...pageNums].filter(pn => !pageInfo[pn - 1].visionTried).sort((a, b) => a - b);
+      if (!queue.length) return;
+      log(`  ${queue.length} page(s) to vision fallback (${why}): ${queue.join(', ')}`, 'info');
+      const got = {};
+      let next = 0;
+      async function worker() {
+        while (next < queue.length) {
+          const pn = queue[next++];
+          const info = pageInfo[pn - 1];
+          info.visionTried = true;
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            info.attempts = attempt;
+            try {
+              const img = await deps.renderPageImage(pdfPages[pn - 1]);
+              const json = await deps.callVision(img, { page: pn, file: file.name });
+              got[pn] = { rows: visionToRows(json, pn), opening: num(json && json.opening_balance) };
+              info.visionError = null;
+              break;
+            } catch (e) {
+              info.visionError = e.message || String(e);
+              log(`  Page ${pn}: vision attempt ${attempt} failed — ${info.visionError}`, 'err');
+            }
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, worker));
+      for (const pn of queue) {
+        const v = got[pn];
+        if (!v) continue;
+        if (opening === null && v.opening !== null) opening = v.opening;   // queue is in page order
+        const textRowsOfPage = rows.filter(r => r.page === pn);
+        const candidate = rows.filter(r => r.page < pn).concat(v.rows, rows.filter(r => r.page > pn));
+        const candFailed = checkRows(opening, candidate.map(r => Object.assign({}, r))).failed;
+        const curFailed = checkRows(opening, rows.map(r => Object.assign({}, r))).failed;
+        const textFailed = textRowsOfPage.filter(r => r.ok === false).length;
+        if (!textRowsOfPage.length || candFailed < curFailed ||
+            (candFailed === curFailed && (textFailed > 0 || forced.has(pn)))) {
+          rows = candidate;
+          pageInfo[pn - 1].path = 'vision';
+        }
+      }
+      checkRows(opening, rows);
+    }
+
+    // Round 1: pages with no usable text layer (and, if the layout wasn't
+    // understood at all, every page). Round 2: pages whose rows still don't
+    // balance once round 1 has filled any gaps.
+    const round1 = new Set(forced);
+    parsed.pageStats.forEach(ps => { if (ps.chars === 0 || ps.readable < 0.9) round1.add(ps.page); });
+    if (!rows.length) parsed.pageStats.forEach(ps => round1.add(ps.page));
+    await visionRound(round1, 'no usable text layer');
+    await visionRound(new Set(rows.filter(r => r.ok === false).map(r => r.page)), "rows don't balance");
+
+    const rowSummary = checkRows(opening, rows);
+    const whole = wholeStatement(opening, rows, parsed.closingPrinted, parsed.totals);
+    const isos = rows.map(r => r.iso).filter(Boolean).sort();
+    try { await doc.destroy(); } catch (e) { /* ignore */ }
+    const ms = Date.now() - t0;
+    // Plain-English reasons a file needs attention (shown on screen).
+    const problems = [];
+    const unread = pageInfo.filter(p => p.visionError && !rows.some(r => r.page === p.page) &&
+      (p.chars === 0 || p.readable < 0.9 || p.textRows > 0));
+    unread.forEach(p => problems.push(`Page ${p.page} could not be read (${p.visionError})`));
+    if (rowSummary.failed) problems.push(`${rowSummary.failed} row(s) don't balance against the printed running balance`);
+    if (opening === null) problems.push('Opening balance not found, so the first row cannot be verified');
+    if (whole.computed !== null && !whole.balanceOk) problems.push(`Opening + credits − debits = ${whole.computed.toFixed(2)}, but the closing balance is ${whole.closing === null ? 'missing' : whole.closing.toFixed(2)}`);
+    whole.printed.filter(p => !p.ok).forEach(p => problems.push(`Printed total ${p.name} ${p.printed.toFixed(2)} ≠ extracted ${Math.abs(p.extracted).toFixed(2)}`));
+    const status = !rows.length ? 'empty'
+      : unread.length || rowSummary.failed > 0 || (whole.computed !== null && !whole.ok) ? 'unbalanced'
+      : rowSummary.unchecked > 0 || whole.computed === null ? 'unverified' : 'reconciled';
+    return {
+      name: file.name, bank: parsed.bank, accountKey: parsed.accountKey, fontModes,
+      period: isos.length ? { from: isos[0], to: isos[isos.length - 1] } : null,
+      opening, closing: whole.closing, closingSource: whole.closingSource,
+      rows, rowSummary, whole, pageInfo, pages: pages.length,
+      counts: { text: rows.filter(r => r.path === 'text').length, vision: rows.filter(r => r.path === 'vision').length },
+      skippedDated: parsed.skippedDated.length, orphanMoneyLines: parsed.orphanMoneyLines,
+      ms, readMs, status, problems,
+    };
+  }
+
+  /* ---------- pipeline: a batch of files (what the app's Extract step runs) ----------
+     files: [{name, bytes: Uint8Array, password?}]. Returns one result per file,
+     each with .txns = rows as app transactions (categorised, path + check recorded). */
+  async function runBatch(files, deps) {
+    const log = deps.log || (() => {});
+    const results = [];
+    for (const f of files) {
+      log(`Processing ${f.name}…`, 'info');
+      try {
+        const r = await processFile(f, deps);
+        results.push(r);
+        log(`  ${r.rows.length} rows · ${r.rowSummary.passed}/${r.rowSummary.total} verified · text ${r.counts.text} / vision ${r.counts.vision}`,
+          r.status === 'reconciled' ? 'ok' : 'err');
+      } catch (e) {
+        const pw = e && e.name === 'PasswordException';
+        const msg = pw ? (e.code === 1 ? 'password needed' : 'wrong password') : (e.message || String(e));
+        results.push({ name: f.name, error: msg, status: 'error', rows: [], counts: { text: 0, vision: 0 },
+          rowSummary: { total: 0, passed: 0, failed: 0, unchecked: 0 }, pageInfo: [] });
+        log(`  ✗ ${f.name}: ${msg}`, 'err');
+      }
+    }
+    continuity(results.filter(r => !r.error));
+    results.forEach(r => {
+      r.txns = r.rows.map(row => ({
+        post_date: row.iso, trans_date: row.trans_iso || row.iso,
+        txn_type: row.amount >= 0 ? 'Credit' : 'Debit',
+        reference: row.reference, amount: row.amount, fees: row.fee, balance: row.balance,
+        category: validCategory(categorise(row.reference), deps.customCategories),
+        source_file: r.name, path: row.path, check: row.ok, expected: row.expected, page: row.page,
+      }));
+    });
+    return results;
+  }
+
+  root.TF = {
+    readPage, chooseDecoding, readableRatio, pageRuns, groupLines, parsePages,
+    checkRows, wholeStatement, continuity, categorise, validCategory, CATEGORIES, CATEGORY_RULES,
+    visionToRows, processFile, runBatch, isoDate,
+  };
+})(typeof globalThis !== 'undefined' ? globalThis : window);
+</script>
 <script>
 /* ============================================================
    APP STATE — shared across all modules
