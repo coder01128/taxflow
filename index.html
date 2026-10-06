@@ -1966,6 +1966,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
             row.nMoney++;
           }
           row.amount = round2(row.amount); row.fee = round2(row.fee);
+          row.feeCol = row.fee;   // as printed in the Fees column; chooseFeeConvention decides what row.fee means
           // reference: the non-money text, minus everything up to the last date
           let ref = ln.runs.filter(r => r.x1 < firstMoneyX - 5).map(r => r.text).join(' ');
           const ds = [...ref.matchAll(dateRx())];
@@ -2035,6 +2036,40 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     };
   }
 
+  /* ---------- fee convention (one per statement) ----------
+     A value in a statement's Fees column means one of two things:
+       separate — the fee is charged on that row as well as the amount:
+                  balance = previous + amount − fee
+       included — the fee does not move the balance on that row (it is
+                  already inside the amount, or the bank debits it later
+                  on its own row): balance = previous + amount
+     Every convention is tried across the WHOLE statement; the one that makes
+     every row balance against the printed running balance is kept. Never
+     chosen row by row: if no single convention balances every row, the
+     statement stays on `separate` and is flagged by the normal checks.
+     Only text rows carry a Fees-column value (feeCol); vision rows follow the
+     vision prompt's own rule (fee = charged on this row) and are untouched. */
+  const FEE_CONVENTIONS = ['separate', 'included'];
+  function applyFeeConvention(rows, conv) {
+    rows.forEach(r => { if (r.feeCol !== undefined) r.fee = conv === 'included' ? 0 : r.feeCol; });
+  }
+  function chooseFeeConvention(opening, rows) {
+    if (!rows.some(r => r.feeCol)) {
+      applyFeeConvention(rows, 'separate');
+      return { convention: 'none', tried: [] };   // no Fees-column values: nothing to decide
+    }
+    const tried = FEE_CONVENTIONS.map(conv => {
+      const trial = rows.map(r => Object.assign({}, r));
+      applyFeeConvention(trial, conv);
+      const s = checkRows(opening, trial);
+      return { convention: conv, passed: s.passed, failed: s.failed };
+    });
+    const fits = tried.filter(t => t.failed === 0 && t.passed > 0);
+    const convention = fits.length === 1 ? fits[0].convention : null;
+    applyFeeConvention(rows, convention || 'separate');
+    return { convention, tried };
+  }
+
   function wholeStatement(opening, rows, closingPrinted, totals) {
     const credits = round2(rows.filter(r => r.amount > 0).reduce((s, r) => s + r.amount, 0));
     const debits = round2(-rows.filter(r => r.amount < 0).reduce((s, r) => s + r.amount, 0));
@@ -2047,6 +2082,8 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     // Banks differ on whether printed "total debits" includes fees, and on
     // whether fees sit in their own column (fee field) or are marked inside
     // the debit column (Nedbank "*", counted in starFees). Accept either.
+    // Under the `included` fee convention row.fee is 0, so the fee total is
+    // just the fees that moved the balance inside the debit column.
     const near = (a, b) => Math.abs(Math.abs(a) - b) < 0.005;
     const printed = [];
     for (const [k, v] of Object.entries(totals || {})) {
@@ -2187,6 +2224,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
 
     let rows = parsed.rows;
     let opening = parsed.opening;
+    let fees = chooseFeeConvention(opening, rows);
     checkRows(opening, rows);
 
     const pageInfo = parsed.pageStats.map(ps => ({
@@ -2251,8 +2289,13 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     const round1 = new Set(forced);
     parsed.pageStats.forEach(ps => { if (ps.chars === 0 || ps.readable < 0.9) round1.add(ps.page); });
     if (!rows.length) parsed.pageStats.forEach(ps => round1.add(ps.page));
+    // The fee convention is re-decided once missing pages are filled and
+    // again at the end, always over the whole statement.
     await visionRound(round1, 'no usable text layer');
+    fees = chooseFeeConvention(opening, rows);
+    checkRows(opening, rows);
     await visionRound(new Set(rows.filter(r => r.ok === false).map(r => r.page)), "rows don't balance");
+    fees = chooseFeeConvention(opening, rows);
 
     const rowSummary = checkRows(opening, rows);
     const whole = wholeStatement(opening, rows, parsed.closingPrinted, parsed.totals);
@@ -2265,6 +2308,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
       (p.chars === 0 || p.readable < 0.9 || p.textRows > 0));
     unread.forEach(p => problems.push(`Page ${p.page} could not be read (${p.visionError})`));
     if (rowSummary.failed) problems.push(`${rowSummary.failed} row(s) don't balance against the printed running balance`);
+    if (fees.convention === null) problems.push('No single fee convention (fees charged separately, or not deducted on the row) balances every row');
     if (opening === null) problems.push('Opening balance not found, so the first row cannot be verified');
     if (whole.computed !== null && !whole.balanceOk) problems.push(`Opening + credits − debits = ${whole.computed.toFixed(2)}, but the closing balance is ${whole.closing === null ? 'missing' : whole.closing.toFixed(2)}`);
     whole.printed.filter(p => !p.ok).forEach(p => problems.push(`Printed total ${p.name} ${p.printed.toFixed(2)} ≠ extracted ${Math.abs(p.extracted).toFixed(2)}`));
@@ -2275,7 +2319,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
       name: file.name, bank: parsed.bank, accountKey: parsed.accountKey, fontModes,
       period: isos.length ? { from: isos[0], to: isos[isos.length - 1] } : null,
       opening, closing: whole.closing, closingSource: whole.closingSource,
-      rows, rowSummary, whole, pageInfo, pages: pages.length,
+      rows, rowSummary, whole, pageInfo, pages: pages.length, feeConvention: fees.convention, feeTried: fees.tried,
       counts: { text: rows.filter(r => r.path === 'text').length, vision: rows.filter(r => r.path === 'vision').length },
       skippedDated: parsed.skippedDated.length, orphanMoneyLines: parsed.orphanMoneyLines,
       ms, readMs, status, problems, unreadPages: unread.map(p => p.page),
@@ -2318,7 +2362,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
 
   root.TF = {
     readPage, chooseDecoding, readableRatio, pageRuns, groupLines, parsePages,
-    checkRows, wholeStatement, continuity, categorise, validCategory, CATEGORIES, CATEGORY_RULES,
+    checkRows, chooseFeeConvention, applyFeeConvention, FEE_CONVENTIONS, wholeStatement, continuity, categorise, validCategory, CATEGORIES, CATEGORY_RULES,
     visionToRows, processFile, runBatch, isoDate,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : window);
@@ -2920,6 +2964,7 @@ const Extractor = (() => {
       period: r.period || null, pages: r.pages || 0, opening: r.opening ?? null, closing: r.closing ?? null,
       closingSource: r.closingSource || '', rowSummary: r.rowSummary, counts: r.counts,
       printed: r.whole ? r.whole.printed : [], continuity: r.continuity || null, problems: r.problems || [],
+      feeConvention: r.feeConvention === undefined ? 'unknown' : r.feeConvention,
       unreadPages: r.unreadPages || [],
       badRows: (r.rows || []).filter(x => x.ok === false).map(x => ({
         id: x.txnId, page: x.page, date: x.iso, reference: x.reference, amount: x.amount + (x.fee || 0),
@@ -2988,6 +3033,11 @@ const Extractor = (() => {
       : _esc(cont.detail || '—');
     const printed = (r.printed || []).map(p =>
       `<span class="${p.ok ? 'yes' : 'no'}">${p.ok ? '✓' : '✗'} ${_esc(p.name)}</span>`).join(' · ') || 'none printed';
+    const feeTxt = r.feeConvention === 'separate' ? 'Fees: charged separately (balance = previous + amount − fee)'
+      : r.feeConvention === 'included' ? 'Fees: included in amount — the Fees column does not move the balance on its row'
+      : r.feeConvention === 'none' ? 'Fees: no per-row fees in a Fees column'
+      : r.feeConvention === null ? '<span class="no">✗ Fees: no single convention balances every row</span>'
+      : '—';
 
     const problems = (r.problems || []).length
       ? `<ul class="rc-problems">${r.problems.map(p => `<li>${_esc(p)}</li>`).join('')}</ul>` : '';
@@ -3023,6 +3073,7 @@ const Extractor = (() => {
           <div class="rc-cell">Closing balance (${_esc(r.closingSource || '—')})<b>${_money(r.closing)}</b></div>
           <div class="rc-cell">Rows read from text / by AI vision<b>${r.counts.text} / ${r.counts.vision}</b></div>
           <div class="rc-cell">Printed totals<b style="font-family:var(--font);font-size:13px">${printed}</b></div>
+          <div class="rc-cell" style="grid-column:1/-1">Fee convention<b style="font-family:var(--font);font-size:13px">${feeTxt}</b></div>
           <div class="rc-cell" style="grid-column:1/-1">Continuity<b style="font-family:var(--font);font-size:13px">${contTxt}</b></div>
         </div>`}
         ${problems}

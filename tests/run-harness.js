@@ -5,11 +5,14 @@
    index.html (TF.runBatch → TF.processFile) — on every PDF in a folder,
    using pdfjs-dist (same version as index.html) instead of the browser build.
 
-     node tests/run-harness.js [--dir <folder>] [--expect <json>] [--core <file>]
+     node tests/run-harness.js [--dir <folder>]... [--expect <json>]... [--core <file>]
 
-   --dir     folder of statement PDFs (default C:\ccode\test-statements)
+   --dir     folder of statement PDFs (default C:\ccode\test-statements).
+             Repeat to run several folders; each folder is its own batch
+             (continuity is checked within a folder).
    --expect  optional JSON of expected numbers keyed by "<Bank> <YYYY-MM>"
-             (kept OUTSIDE the repo, with the statements)
+             (kept OUTSIDE the repo, with the statements). Repeat to merge
+             several files. Optional "fee" key: expected fee convention.
    --core    load the core from a standalone file instead of index.html
    Password-protected PDFs: set TAXFLOW_PDF_PW in the environment.
 
@@ -23,8 +26,9 @@ const vm = require('vm');
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : d; };
-const DIR = opt('--dir', 'C:\\ccode\\test-statements');
-const EXPECT = opt('--expect', null);
+const opts = (k) => args.flatMap((a, i) => a === k && i + 1 < args.length ? [args[i + 1]] : []);
+const DIRS = opts('--dir').length ? opts('--dir') : ['C:\\ccode\\test-statements'];
+const EXPECTS = opts('--expect');
 const CORE = opt('--core', null);
 const ROOT = path.resolve(__dirname, '..');
 
@@ -50,7 +54,13 @@ const pdfjsLib = require(path.join(ROOT, 'node_modules/pdfjs-dist/legacy/build/p
 console.log = _log;
 
 const TF = loadCore();
-const label = r => `${r.bank} ${r.period ? r.period.to.slice(0, 7) : '?'}`;
+const baseLabel = r => `${r.bank} ${r.period ? r.period.to.slice(0, 7) : '?'}`;
+// An expectation may instead be keyed by file name (two statements can end in
+// the same month); its "alias" (e.g. the statement date) is then printed
+// after the label, so file names still never appear in the output.
+const aliases = {};
+const label = r => baseLabel(r) + (aliases[r.name] ? ` [${aliases[r.name]}]` : '');
+let W = 16;
 // first day of the month after `iso` (synthetic "next statement" periods)
 const nextMonth = (iso) => { const d = new Date(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7), 1)); return d.toISOString().slice(0, 10); };
 let failures = 0;
@@ -65,34 +75,46 @@ const baseDeps = (extra) => Object.assign({
   pdfjsLib, docOptions: { disableFontFace: true, verbosity: 0 }, concurrency: 3,
 }, noVision, extra || {});
 
-function loadFiles() {
-  return fs.readdirSync(DIR).filter(f => /\.pdf$/i.test(f)).sort().map(f => ({
-    name: f, bytes: new Uint8Array(fs.readFileSync(path.join(DIR, f))),
+function loadFiles(dir) {
+  return fs.readdirSync(dir).filter(f => /\.pdf$/i.test(f)).sort().map(f => ({
+    name: f, bytes: new Uint8Array(fs.readFileSync(path.join(dir, f))),
     password: process.env.TAXFLOW_PDF_PW || undefined,
   }));
 }
 
 (async () => {
-  const files = loadFiles();
-  console.log(`\n== 1. Acceptance: ${files.length} PDF(s), text path only, no network ==`);
-  const results = await TF.runBatch(files, baseDeps());
-  const expect = EXPECT ? JSON.parse(fs.readFileSync(EXPECT, 'utf8')) : null;
-  console.log('statement        | rows | row checks | whole stmt | printed totals            | continuity | text/vision | ms/page | font decoding');
-  for (const r of results) {
-    if (r.error) { fail(`a file could not be read: ${r.error}`); continue; }
-    const tot = r.whole.printed.map(p => `${p.name}:${p.ok ? 'ok' : 'MISMATCH'}`).join(',') || 'none printed';
-    const fm = Object.values(r.fontModes).includes('encoding') ? 'ToUnicode broken → font encoding' : 'normal';
-    console.log(`${label(r).padEnd(16)} | ${String(r.rows.length).padStart(4)} | ${(r.rowSummary.passed + '/' + r.rowSummary.total).padStart(10)} | ` +
-      `${(r.whole.ok ? 'PASS' : 'FAIL').padEnd(10)} | ${tot.padEnd(25)} | ${r.continuity.status.padEnd(10)} | ` +
-      `${(r.counts.text + '/' + r.counts.vision).padEnd(11)} | ${(r.ms / r.pages).toFixed(0).padStart(7)} | ${fm}`);
-    if (expect) {
-      const e = expect[label(r)];
-      if (!e) fail(`${label(r)}: no expectation`);
-      else if (e.rows !== r.rows.length || e.passed !== r.rowSummary.passed || e.whole !== r.whole.ok)
-        fail(`${label(r)}: expected ${e.rows} rows, ${e.passed} passed, whole ${e.whole}; got ${r.rows.length}, ${r.rowSummary.passed}, ${r.whole.ok}`);
-      else pass(`${label(r)} matches acceptance (${e.rows} rows, ${e.passed}/${e.rows}, whole PASS)`);
+  const files = [], results = [];
+  const expect = EXPECTS.length ? Object.assign({}, ...EXPECTS.map(e => JSON.parse(fs.readFileSync(e, 'utf8')))) : null;
+  let expMet = 0, expTotal = 0;
+  if (expect) for (const [k, e] of Object.entries(expect)) if (e.alias) { aliases[k] = e.alias; W = 27; }
+  for (const [di, dir] of DIRS.entries()) {
+    const batch = loadFiles(dir);
+    files.push(...batch);
+    console.log(`\n== 1. Acceptance${DIRS.length > 1 ? ` (folder ${di + 1} of ${DIRS.length})` : ''}: ${batch.length} PDF(s), text path only, no network ==`);
+    const batchResults = await TF.runBatch(batch, baseDeps());
+    results.push(...batchResults);
+    console.log('statement'.padEnd(W) + ' | rows | row checks | whole stmt | printed totals            | continuity | text/vision | fee convention | ms/page | font decoding');
+    for (const r of batchResults) {
+      if (r.error) { fail(`a file could not be read: ${r.error}`); continue; }
+      const tot = r.whole.printed.map(p => `${p.name}:${p.ok ? 'ok' : 'MISMATCH'}`).join(',') || 'none printed';
+      const fm = Object.values(r.fontModes).includes('encoding') ? 'ToUnicode broken → font encoding' : 'normal';
+      console.log(`${label(r).padEnd(W)} | ${String(r.rows.length).padStart(4)} | ${(r.rowSummary.passed + '/' + r.rowSummary.total).padStart(10)} | ` +
+        `${(r.whole.ok ? 'PASS' : 'FAIL').padEnd(10)} | ${tot.padEnd(25)} | ${r.continuity.status.padEnd(10)} | ` +
+        `${(r.counts.text + '/' + r.counts.vision).padEnd(11)} | ${String(r.feeConvention === null ? 'NONE FITS' : r.feeConvention).padEnd(14)} | ` +
+        `${(r.ms / r.pages).toFixed(0).padStart(7)} | ${fm}`);
+      if (expect) {
+        const e = expect[r.name] || expect[baseLabel(r)];
+        expTotal++;
+        if (!e) fail(`${label(r)}: no expectation`);
+        else if (e.rows !== r.rows.length || e.passed !== r.rowSummary.passed || e.whole !== r.whole.ok)
+          fail(`${label(r)}: expected ${e.rows} rows, ${e.passed} passed, whole ${e.whole}; got ${r.rows.length}, ${r.rowSummary.passed}, ${r.whole.ok}`);
+        else if (e.fee !== undefined && e.fee !== r.feeConvention)
+          fail(`${label(r)}: expected fee convention ${e.fee}; got ${r.feeConvention}`);
+        else { expMet++; pass(`${label(r)} matches acceptance (${e.rows} rows, ${e.passed}/${e.rows}, whole ${e.whole ? 'PASS' : 'FAIL'}${e.fee ? ', fees ' + e.fee : ''})`); }
+      }
     }
   }
+  if (expect) console.log(`acceptance: ${expMet}/${expTotal} statement(s) match expectations`);
   const ok = results.filter(r => !r.error);
   const cats = ok.flatMap(r => r.txns);
   const unc = cats.filter(t => t.category === 'Uncategorised').length;
@@ -116,7 +138,7 @@ function loadFiles() {
       period: { from: nextMonth(r.period.to), to: nextMonth(r.period.to) } };
     TF.continuity([truncated, follower]);
     const cCaught = !wc.balanceOk || follower.continuity.status === 'break';
-    console.log(`${label(r).padEnd(16)} | A amount+R1: ${sa.failed} row fail, whole ${wa.balanceOk ? 'pass' : 'FAIL'}` +
+    console.log(`${label(r).padEnd(W)} | A amount+R1: ${sa.failed} row fail, whole ${wa.balanceOk ? 'pass' : 'FAIL'}` +
       ` | B middle row deleted: ${sb.failed} row fail, whole ${wb.balanceOk ? 'pass' : 'FAIL'}` +
       ` | C last row deleted: whole ${wc.balanceOk ? 'pass' : 'FAIL'}, continuity vs next statement ${follower.continuity.status}` +
       ` → ${cCaught ? 'caught' : 'MISSED'} (${r.closingSource === 'printed' ? 'printed closing balance' : 'continuity only'})`);
@@ -125,9 +147,35 @@ function loadFiles() {
     if (!cCaught) fail(`${label(r)} sabotage C not caught`);
   }
 
+  // ---- 2b. fee convention: chosen for the whole statement, never row by row ----
+  console.log('\n== 2b. Fee convention sabotage (in memory) ==');
+  for (const r of ok) {
+    const feeRows = r.rows.map((x, i) => x.feeCol ? i : -1).filter(i => i >= 0);
+    if (!feeRows.length || !['separate', 'included'].includes(r.feeConvention)) {
+      console.log(`${label(r).padEnd(W)} | convention ${r.feeConvention === null ? 'NONE FITS' : r.feeConvention}: no Fees-column rows to sabotage`);
+      continue;
+    }
+    const other = r.feeConvention === 'separate' ? 'included' : 'separate';
+    // D: the other convention, applied to the whole statement, must not balance
+    const d = clone(r.rows); TF.applyFeeConvention(d, other);
+    const sd = TF.checkRows(r.opening, d);
+    // E: one fee row rewritten to follow the other convention (its balance and
+    // every later balance shifted by its fee) → no single convention may fit
+    const e = clone(r.rows);
+    const at = feeRows[Math.floor(feeRows.length / 2)];
+    const shift = r.feeConvention === 'separate' ? -e[at].feeCol : e[at].feeCol;
+    for (let j = at; j < e.length; j++) if (e[j].balance !== null) e[j].balance = Math.round((e[j].balance + shift) * 100) / 100;
+    const ce = TF.chooseFeeConvention(r.opening, e);
+    const se = TF.checkRows(r.opening, e);
+    console.log(`${label(r).padEnd(W)} | chosen ${r.feeConvention}, ${feeRows.length} Fees-column row(s) | D whole statement as ${other}: ${sd.failed} row fail` +
+      ` | E one row mixed: chooser → ${ce.convention === null ? 'none fits' : ce.convention} (tried ${ce.tried.map(t => t.convention + ' ' + t.failed + ' fail').join(', ')}), ${se.failed} row fail`);
+    if (sd.failed < 1) fail(`${label(r)} sabotage D: other convention also balances`);
+    if (feeRows.length > 1 && (ce.convention !== null || se.failed < 1)) fail(`${label(r)} sabotage E: mixed conventions not flagged`);
+  }
+
   // ---- 3. continuity: synthetic consecutive statement ----
   console.log('\n== 3. Continuity ==');
-  for (const r of ok) console.log(`${label(r).padEnd(16)} | ${r.continuity.status}${r.continuity.months ? ' (' + r.continuity.months + ' month(s) missing)' : ''}`);
+  for (const r of ok) console.log(`${label(r).padEnd(W)} | ${r.continuity.status}${r.continuity.months ? ' (' + r.continuity.months + ' month(s) missing)' : ''}`);
   {
     const r = ok[0];
     const good = { name: 'next', bank: r.bank, accountKey: r.accountKey, opening: r.closing, closing: 0, period: { from: nextMonth(r.period.to), to: nextMonth(r.period.to) } };
