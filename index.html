@@ -7,8 +7,27 @@
 
 <!-- pdf.js: unlocks PDFs, reads their text layer (text-first extraction), and
      renders pages to images for the vision fallback. Keep the version in step
-     with pdfjs-dist in package.json (the Node test harness uses it). -->
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+     with pdfjs-dist in package.json (the Node test harness uses it).
+     pdf.js ships as ES modules only. A module script loads it and hands it to
+     the classic scripts through window.pdfjsReady, a promise every caller
+     awaits. Works opened from disk (file://) and online: the worker comes
+     from the CDN too, and pdf.js wraps a cross-origin worker itself (or runs
+     it on the main thread if the browser refuses a worker). -->
+<script>
+window.pdfjsReady = new Promise((resolve, reject) => { window.__pdfjsResolve = resolve; window.__pdfjsReject = reject; });
+</script>
+<script type="module">
+const PDFJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/6.4.299/';
+import(PDFJS_CDN + 'pdf.min.mjs').then(async (lib) => {
+  lib.GlobalWorkerOptions.workerSrc = PDFJS_CDN + 'pdf.worker.min.mjs';
+  // Opened from disk, the browser refuses a cross-origin worker, so pdf.js
+  // runs its worker code on the main thread. Load that code up front
+  // (globalThis.pdfjsWorker is what pdf.js looks for) instead of letting
+  // the worker attempt fail first.
+  if (location.protocol === 'file:') globalThis.pdfjsWorker = await import(PDFJS_CDN + 'pdf.worker.min.mjs');
+  window.__pdfjsResolve(lib);
+}).catch((e) => window.__pdfjsReject(new Error('pdf.js could not be loaded (' + (e && e.message || e) + ')')));
+</script>
 <!-- ExcelJS for .xlsx export/import with real dropdown data validation on the Category column -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 
@@ -1604,6 +1623,9 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     ];
   }
   function apply(p, m) { return [m[0] * p[0] + m[2] * p[1] + m[4], m[1] * p[0] + m[3] * p[1] + m[5]]; }
+  // A 6-number matrix argument: a plain array (older pdf.js) or a typed
+  // array such as Float32Array (newer pdf.js). null if it isn't one.
+  function matrix6(x) { return x && typeof x === 'object' && x.length === 6 ? Array.from(x) : null; }
 
   async function readPage(pdfjsLib, page) {
     const OPS = pdfjsLib.OPS;
@@ -1663,12 +1685,12 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
         case OPS.transform: st.ctm = mul(st.ctm, a); break;
         case OPS.paintFormXObjectBegin:
           stack.push(clone(st));
-          if (Array.isArray(a[0]) && a[0].length === 6) st.ctm = mul(st.ctm, a[0]);
+          if (matrix6(a[0])) st.ctm = mul(st.ctm, matrix6(a[0]));
           break;
         case OPS.paintFormXObjectEnd: if (stack.length) st = stack.pop(); break;
         case OPS.beginText: st.tm = IDENTITY.slice(); st.x = st.lineX = 0; st.y = st.lineY = 0; break;
         case OPS.setTextMatrix: {
-          const v = Array.isArray(a[0]) ? a[0] : a;
+          const v = matrix6(a[0]) || a;
           st.tm = [v[0], v[1], v[2], v[3], v[4], v[5]]; st.x = st.lineX = 0; st.y = st.lineY = 0; break;
         }
         case OPS.moveText: moveText(a[0], a[1]); break;
@@ -2344,7 +2366,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     const rowSummary = checkRows(opening, rows);
     const whole = wholeStatement(opening, rows, parsed.closingPrinted, parsed.totals);
     const isos = rows.map(r => r.iso).filter(Boolean).sort();
-    try { await doc.destroy(); } catch (e) { /* ignore */ }
+    try { await doc.loadingTask.destroy(); } catch (e) { /* ignore */ }   // PDFDocumentProxy.destroy() is gone in newer pdf.js
     const ms = Date.now() - t0;
     // Plain-English reasons a file needs attention (shown on screen).
     const problems = [];
@@ -2713,9 +2735,7 @@ const Unvault = (() => {
        Extractor already renders every page through pdf.js. So there is no
        need to produce a decrypted PDF at all: verify the password here, keep
        the ORIGINAL bytes, and carry the password forward for extraction. */
-    const pdfjsLib = window['pdfjs-dist/build/pdf'];
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const pdfjsLib = await window.pdfjsReady;
 
     let successCount = 0, failCount = 0;
     const errors = [];
@@ -2728,8 +2748,9 @@ const Unvault = (() => {
         let pdfDoc;
         try {
           // slice(0) — pdf.js transfers the buffer, so give it its own copy
-          // isEvalSupported:false — mitigates CVE-2024-4367 (GHSA-wgrm-67xf-hhpq):
-          // pdf.js 3.11.174 can run script from a malicious PDF's font otherwise.
+          // isEvalSupported:false — defence in depth against CVE-2024-4367
+          // (GHSA-wgrm-67xf-hhpq: script run from a malicious PDF's font). The
+          // bug itself is fixed in the pdf.js version loaded above (6.4.299).
           pdfDoc = await pdfjsLib.getDocument({
             data: bytes.slice(0),
             password: password || undefined,
@@ -2751,7 +2772,7 @@ const Unvault = (() => {
         }
 
         const pageCount = pdfDoc.numPages;
-        pdfDoc.destroy();
+        pdfDoc.loadingTask.destroy();
         AppState.unlockedFiles.push({
           name: file.name, bytes, pages: pageCount,
           password: password || undefined,   // pdf.js needs it again at extraction
@@ -2835,12 +2856,10 @@ async function loadDemo() {
     const pdfBytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) pdfBytes[i] = bin.charCodeAt(i);
 
-    const pdfjsLib = window['pdfjs-dist/build/pdf'];
-    pdfjsLib.GlobalWorkerOptions.workerSrc =
-      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    const pdfjsLib = await window.pdfjsReady;
     const pdfDoc = await pdfjsLib.getDocument({ data: pdfBytes.slice(0), isEvalSupported: false }).promise;
     const pageCount = pdfDoc.numPages;
-    await pdfDoc.destroy();
+    await pdfDoc.loadingTask.destroy();
 
     if (!AppState.unlockedFiles.some(f => f.name === 'sample-statement.pdf')) {
       AppState.unlockedFiles.push({ name: 'sample-statement.pdf', bytes: pdfBytes, pages: pageCount });
@@ -2945,12 +2964,6 @@ const Extractor = (() => {
     return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
-  function _pdfjs() {
-    const lib = window['pdfjs-dist/build/pdf'];
-    lib.GlobalWorkerOptions.workerSrc =
-      'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-    return lib;
-  }
 
   // Vision fallback only: render one page to JPEG, stepping quality down
   // until it fits under the server's size cap.
@@ -3009,7 +3022,7 @@ const Extractor = (() => {
     if (skipped > 0) _log(`Skipping ${skipped} file${skipped !== 1 ? 's' : ''} already extracted this session.`, 'info');
 
     const deps = {
-      pdfjsLib: _pdfjs(),
+      pdfjsLib: await window.pdfjsReady,
       renderPageImage: _renderPage,
       callVision: _callVision,
       concurrency: 3,

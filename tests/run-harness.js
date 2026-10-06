@@ -23,6 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
+const url = require('url');
 
 const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : d; };
@@ -46,12 +47,19 @@ function loadCore() {
   return globalThis.TF;
 }
 
-// pdf.js warns at load time that the optional `canvas` package is missing.
-// Text extraction doesn't need it; keep the output readable.
-const _log = console.log;
-console.log = (...a) => { if (!/Cannot polyfill|canvas/.test(String(a[0]))) _log(...a); };
-const pdfjsLib = require(path.join(ROOT, 'node_modules/pdfjs-dist/legacy/build/pdf.js'));
-console.log = _log;
+// pdfjs-dist ships ES modules only; the legacy build is the one for Node.
+// It is imported at the start of the run (below). It may warn at load time
+// about optional canvas/polyfill support that text extraction doesn't need;
+// keep the output readable.
+let pdfjsLib = null;
+async function loadPdfjs() {
+  const quiet = (fn) => (...a) => { if (!/Cannot polyfill|canvas|Path2D|DOMMatrix|ImageData/.test(String(a[0]))) fn(...a); };
+  const saved = [console.log, console.warn];
+  console.log = quiet(saved[0]); console.warn = quiet(saved[1]);
+  try {
+    pdfjsLib = await import(url.pathToFileURL(path.join(ROOT, 'node_modules/pdfjs-dist/legacy/build/pdf.mjs')).href);
+  } finally { [console.log, console.warn] = saved; }
+}
 
 const TF = loadCore();
 const baseLabel = r => `${r.bank} ${r.period ? r.period.to.slice(0, 7) : '?'}`;
@@ -83,6 +91,7 @@ function loadFiles(dir) {
 }
 
 (async () => {
+  await loadPdfjs();
   const files = [], results = [];
   const expect = EXPECTS.length ? Object.assign({}, ...EXPECTS.map(e => JSON.parse(fs.readFileSync(e, 'utf8')))) : null;
   let expMet = 0, expTotal = 0;
