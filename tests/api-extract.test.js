@@ -58,6 +58,8 @@ async function call(method, body) { const res = fakeRes(); await handler({ metho
   check('browser model is ignored', sent && sent.model === 'anthropic/claude-sonnet-5', sent && sent.model);
   check('browser max_tokens is ignored', sent && sent.max_tokens === 8192, sent && sent.max_tokens);
   check('server prompt does not ask for categories', sent && !/categor(y|ies|ise)":/i.test(sent.messages[0].content[1].text));
+  check('server prompt asks for the Fees column as printed', sent && /"fees_column"/.test(sent.messages[0].content[1].text) &&
+    /"fee_marked"/.test(sent.messages[0].content[1].text) && !/"fee": number/.test(sent.messages[0].content[1].text));
 
   mockUpstream({ status: 413 });
   r = await call('POST', { image: JPEG });
@@ -68,7 +70,7 @@ async function call(method, body) { const res = fakeRes(); await handler({ metho
   mockUpstream({ content: 'not json' });
   r = await call('POST', { image: JPEG });
   check('non-JSON AI response → 502', r.statusCode === 502 && /not valid JSON/.test(r.body.error));
-  mockUpstream({ content: '```json\n{"opening_balance":100,"transactions":[{"post_date":"2026-01-01","amount":-5,"fee":0,"balance":95}]}\n```' });
+  mockUpstream({ content: '```json\n{"opening_balance":100,"transactions":[{"post_date":"2026-01-01","amount":-5,"fees_column":null,"fee_marked":false,"balance":95}]}\n```' });
   r = await call('POST', { image: JPEG });
   check('markdown-fenced JSON is accepted', r.statusCode === 200 && r.body.result.transactions.length === 1);
 

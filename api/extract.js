@@ -25,8 +25,9 @@ Return ONLY a JSON object, no markdown, no commentary:
       "post_date": "YYYY-MM-DD",
       "trans_date": "YYYY-MM-DD" or null,
       "reference": "description / merchant text as printed (join wrapped lines)",
-      "amount": number,   // money in positive, money out negative, EXCLUDING any bank fee
-      "fee": number,      // bank fee charged on this row as a positive number, 0 if none
+      "amount": number,   // the Debit / Credit / Amount figure printed on this row: money in positive, money out negative
+      "fees_column": number or null,   // the figure printed in this row's Fees / Charges column, copied as a positive number; null if that cell is blank or there is no such column
+      "fee_marked": boolean,   // true only if this row's amount itself is marked as a bank fee (for example with * after it)
       "balance": number or null   // running balance printed on this row; negative if overdrawn (Dr / minus)
     }
   ]
@@ -35,7 +36,8 @@ Return ONLY a JSON object, no markdown, no commentary:
 Rules:
 - Include every transaction row, in the order printed.
 - Skip column headers, page headers/footers, "balance brought forward" / "carried forward" lines, totals and VAT summaries.
-- If a fee is shown in its own Fees column, or a row is marked as a fee (for example with *), put that value in "fee", not in "amount".
+- Copy figures exactly as printed. Do not add, subtract or move money between "amount" and "fees_column": a Fees column value goes only in "fees_column", and an amount marked as a fee (for example with *) stays in "amount" with "fee_marked": true.
+- Do not check or correct the running balance; report it as printed.
 - Thousands may be separated by spaces or commas: "1 977.00" and "1,977.00" are both 1977.00.
 - If the page has no transactions, return {"opening_balance": null, "closing_balance": null, "transactions": []}.`;
 

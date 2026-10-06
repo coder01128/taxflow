@@ -2046,9 +2046,12 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
      Every convention is tried across the WHOLE statement; the one that makes
      every row balance against the printed running balance is kept. Never
      chosen row by row: if no single convention balances every row, the
-     statement stays on `separate` and is flagged by the normal checks.
-     Only text rows carry a Fees-column value (feeCol); vision rows follow the
-     vision prompt's own rule (fee = charged on this row) and are untouched. */
+     statement is flagged (convention null) and the one convention with the
+     fewest failing rows is applied to every row (ties: `separate`), so the
+     rows flagged are the real problem rows, not every fee row.
+     Text rows and vision rows both carry the raw Fees-column value (feeCol):
+     the vision prompt reports that column as printed, so the same choice
+     applies to every row of the statement whatever path read it. */
   const FEE_CONVENTIONS = ['separate', 'included'];
   function applyFeeConvention(rows, conv) {
     rows.forEach(r => { if (r.feeCol !== undefined) r.fee = conv === 'included' ? 0 : r.feeCol; });
@@ -2056,7 +2059,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
   function chooseFeeConvention(opening, rows) {
     if (!rows.some(r => r.feeCol)) {
       applyFeeConvention(rows, 'separate');
-      return { convention: 'none', tried: [] };   // no Fees-column values: nothing to decide
+      return { convention: 'none', applied: 'separate', tried: [] };   // no Fees-column values: nothing to decide
     }
     const tried = FEE_CONVENTIONS.map(conv => {
       const trial = rows.map(r => Object.assign({}, r));
@@ -2066,8 +2069,9 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     });
     const fits = tried.filter(t => t.failed === 0 && t.passed > 0);
     const convention = fits.length === 1 ? fits[0].convention : null;
-    applyFeeConvention(rows, convention || 'separate');
-    return { convention, tried };
+    const applied = convention || tried.slice().sort((a, b) => a.failed - b.failed)[0].convention;
+    applyFeeConvention(rows, applied);
+    return { convention, applied, tried };
   }
 
   function wholeStatement(opening, rows, closingPrinted, totals) {
@@ -2213,11 +2217,17 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     if (!list) throw new Error('Vision response has no transactions list');
     return list.map(t => {
       const iso = isoDate(String(t.post_date || '')) || (String(t.post_date || '').match(/^\d{4}-\d{2}-\d{2}$/) ? t.post_date : null);
+      // The prompt returns figures as printed: amount (fee-marked debits
+      // included), the raw Fees-column value, and whether the amount is
+      // itself marked as a fee. Same shape as a text row before the fee
+      // convention is chosen.
+      const amount = round2(num(t.amount) || 0);
+      const feeCol = round2(-Math.abs(num(t.fees_column) || 0));
       return {
         page: pageNum, date: t.post_date || '', iso, trans_iso: t.trans_date ? isoDate(String(t.trans_date)) : null,
         desc: t.reference || '', reference: t.reference || '',
-        amount: round2(num(t.amount) || 0), fee: round2(-Math.abs(num(t.fee) || 0)),
-        balance: num(t.balance), star: 0, nMoney: 0, path: 'vision',
+        amount, fee: feeCol, feeCol, star: t.fee_marked === true && amount < 0 ? amount : 0,
+        balance: num(t.balance), nMoney: 0, path: 'vision',
       };
     });
   }
@@ -2299,8 +2309,14 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
         if (opening === null && v.opening !== null) opening = v.opening;   // queue is in page order
         const textRowsOfPage = rows.filter(r => r.page === pn);
         const candidate = rows.filter(r => r.page < pn).concat(v.rows, rows.filter(r => r.page > pn));
-        const candFailed = checkRows(opening, candidate.map(r => Object.assign({}, r))).failed;
-        const curFailed = checkRows(opening, rows.map(r => Object.assign({}, r))).failed;
+        // each side is judged under its own best whole-statement fee convention
+        const failedOf = (list) => {
+          const copy = list.map(r => Object.assign({}, r));
+          chooseFeeConvention(opening, copy);
+          return checkRows(opening, copy).failed;
+        };
+        const candFailed = failedOf(candidate);
+        const curFailed = failedOf(rows);
         const textFailed = textRowsOfPage.filter(r => r.ok === false).length;
         if (!textRowsOfPage.length || candFailed < curFailed ||
             (candFailed === curFailed && (textFailed > 0 || forced.has(pn)))) {
@@ -2336,7 +2352,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
       (p.chars === 0 || p.readable < 0.9 || p.textRows > 0));
     unread.forEach(p => problems.push(`Page ${p.page} could not be read (${p.visionError})`));
     if (rowSummary.failed) problems.push(`${rowSummary.failed} row(s) don't balance against the printed running balance`);
-    if (fees.convention === null) problems.push('No single fee convention (fees charged separately, or not deducted on the row) balances every row');
+    if (fees.convention === null) problems.push(`No single fee convention (fees charged separately, or not deducted on the row) balances every row — rows are checked as "${fees.applied}", the closest fit`);
     if (opening === null) problems.push('Opening balance not found, so the first row cannot be verified');
     if (whole.computed !== null && !whole.balanceOk) problems.push(`Opening + credits − debits = ${whole.computed.toFixed(2)}, but the closing balance is ${whole.closing === null ? 'missing' : whole.closing.toFixed(2)}`);
     whole.printed.filter(p => !p.ok).forEach(p => problems.push(`Printed total ${p.name} ${p.printed.toFixed(2)} ≠ extracted ${Math.abs(p.extracted).toFixed(2)}`));
@@ -2347,7 +2363,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
       name: file.name, bank: parsed.bank, accountKey: parsed.accountKey, fontModes,
       period: isos.length ? { from: isos[0], to: isos[isos.length - 1] } : null,
       opening, closing: whole.closing, closingSource: whole.closingSource,
-      rows, rowSummary, whole, pageInfo, pages: pages.length, feeConvention: fees.convention, feeTried: fees.tried,
+      rows, rowSummary, whole, pageInfo, pages: pages.length, feeConvention: fees.convention, feeApplied: fees.applied, feeTried: fees.tried,
       counts: { text: rows.filter(r => r.path === 'text').length, vision: rows.filter(r => r.path === 'vision').length },
       skippedDated: parsed.skippedDated.length, orphanMoneyLines: parsed.orphanMoneyLines,
       ms, readMs, status, problems, unreadPages: unread.map(p => p.page),
@@ -3058,7 +3074,7 @@ const Extractor = (() => {
       period: r.period || null, pages: r.pages || 0, opening: r.opening ?? null, closing: r.closing ?? null,
       closingSource: r.closingSource || '', rowSummary: r.rowSummary, counts: r.counts,
       printed: r.whole ? r.whole.printed : [], continuity: r.continuity || null, problems: r.problems || [],
-      feeConvention: r.feeConvention === undefined ? 'unknown' : r.feeConvention,
+      feeConvention: r.feeConvention === undefined ? 'unknown' : r.feeConvention, feeApplied: r.feeApplied || null,
       fingerprint: r.fingerprint || null, duplicateOf: r.duplicateOf || null,
       unreadPages: r.unreadPages || [],
       badRows: (r.rows || []).filter(x => x.ok === false).map(x => ({
@@ -3136,7 +3152,7 @@ const Extractor = (() => {
     const feeTxt = r.feeConvention === 'separate' ? 'Fees: charged separately (balance = previous + amount − fee)'
       : r.feeConvention === 'included' ? 'Fees: included in amount — the Fees column does not move the balance on its row'
       : r.feeConvention === 'none' ? 'Fees: no per-row fees in a Fees column'
-      : r.feeConvention === null ? '<span class="no">✗ Fees: no single convention balances every row</span>'
+      : r.feeConvention === null ? `<span class="no">✗ Fees: no single convention balances every row${r.feeApplied ? ` — rows checked as “${r.feeApplied === 'included' ? 'included in amount' : 'charged separately'}”, the closest fit` : ''}</span>`
       : '—';
 
     const problems = (r.problems || []).length

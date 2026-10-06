@@ -239,16 +239,18 @@ function loadFiles(dir) {
 
   // ---- 4. vision fallback with a mocked API (no network, no cost) ----
   console.log('\n== 4. Vision fallback (mocked API) ==');
-  // one statement per bank (the one with the most pages)
-  const targets = Object.values(ok.reduce((m, r) => { if (!m[r.bank] || r.pages > m[r.bank].pages) m[r.bank] = r; return m; }, {}));
+  // one statement per bank and per fee convention (the one with the most pages)
+  const targets = [...new Set(['bank', 'feeConvention'].flatMap(k => Object.values(ok.filter(r => !r.duplicateOf)
+    .reduce((m, r) => { if (!m[r[k]] || r.pages > m[r[k]].pages) m[r[k]] = r; return m; }, {}))))];
   for (const target of targets) {
     const file = files.find(f => f.name === target.name);
     const truth = {};
     target.rows.forEach(r => { (truth[r.page] = truth[r.page] || []).push(r); });
-    // What the vision prompt asks for: bank fees in `fee` (positive), never inside `amount`.
+    // What the vision prompt asks for: figures as printed — the amount
+    // (fee-marked debits included), the raw Fees-column value, the fee mark.
     const asVision = (rows) => ({ transactions: rows.map(r => ({
-      post_date: r.iso, reference: r.reference, amount: Math.round((r.amount - (r.star || 0)) * 100) / 100,
-      fee: Math.abs(r.fee) + Math.abs(r.star || 0), balance: r.balance })) });
+      post_date: r.iso, reference: r.reference, amount: r.amount,
+      fees_column: r.feeCol ? Math.abs(r.feeCol) : null, fee_marked: !!r.star, balance: r.balance })) });
     function mock({ failFirst = [], failAlways = [], corrupt = [] }) {
       const st = { inflight: 0, max: 0, calls: {} };
       return {
@@ -272,7 +274,7 @@ function loadFiles(dir) {
     }
     const txnPages = Object.keys(truth).map(Number);
     const blank = (pns) => (pages) => pns.forEach(pn => { pages[pn - 1].chars = []; });
-    console.log(`using ${label(target)} (${target.pages} pages, transactions on pages ${txnPages.join(',')})`);
+    console.log(`using ${label(target)} (${target.pages} pages, transactions on pages ${txnPages.join(',')}, fee convention ${target.feeConvention})`);
 
     { // 4a: every transaction page forced to vision: parallelism + retry
       const m = mock({ failFirst: [txnPages[1]] });
@@ -283,6 +285,9 @@ function loadFiles(dir) {
       m.st.calls[txnPages[1]] === 2 && Object.entries(m.st.calls).every(([p, n]) => +p === txnPages[1] || n === 1)
         ? pass('failed page retried once on its own; no other page re-sent') : fail('retry behaviour');
       res.status === 'reconciled' && res.counts.vision === target.rows.length ? pass('vision rows went through the balance checks and reconciled') : fail('4a reconcile');
+      res.feeConvention === target.feeConvention && Math.abs(TF.bankCharges(TF.rowsToTxns(res)) - TF.bankCharges(target.txns)) < 0.005
+        ? pass(`vision rows chose the same fee convention (${res.feeConvention}) and the same bank charges as text`)
+        : fail(`4a fee convention via vision: ${res.feeConvention} vs ${target.feeConvention}`);
     }
     { // 4b: a page with no text layer goes to vision automatically
       const pn = txnPages[0];
