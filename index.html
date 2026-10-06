@@ -2097,6 +2097,32 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
       ok: ok && printed.every(p => p.ok), balanceOk: ok, printed };
   }
 
+  /* ---------- duplicate statements (by content, not file name) ----------
+     A renamed copy of a statement extracts to the same bank, account,
+     period, opening and closing balance and row count. The first file with
+     a fingerprint is the real one; any later file with the same fingerprint
+     is marked duplicateOf it and passes no transactions on.
+     known: [{name, fingerprint}] from earlier runs or committed sessions. */
+  function fingerprint(r) {
+    if (!r || r.error || !r.rows || !r.rows.length) return null;
+    const m = n => (n === null || n === undefined ? '' : Number(n).toFixed(2));
+    const p = r.period || {};
+    return [r.bank, r.accountKey || '', p.from || '', p.to || '', m(r.opening), m(r.closing), r.rows.length].join('|');
+  }
+  function markDuplicates(results, known) {
+    const seen = {};
+    (known || []).forEach(k => { if (k.fingerprint && !k.duplicateOf && !(k.fingerprint in seen)) seen[k.fingerprint] = k.name; });
+    results.forEach(r => {
+      r.fingerprint = fingerprint(r);
+      r.duplicateOf = null;
+      if (!r.fingerprint) return;
+      const first = seen[r.fingerprint];
+      if (first !== undefined && first !== r.name) r.duplicateOf = first;
+      else seen[r.fingerprint] = r.name;
+    });
+    return results;
+  }
+
   function monthIndex(iso) { return iso ? (+iso.slice(0, 4)) * 12 + (+iso.slice(5, 7)) - 1 : null; }
 
   /* Continuity across a batch: for each account (bank + account key), in date
@@ -2105,6 +2131,8 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
   function continuity(results) {
     const groups = {};
     results.forEach(r => {
+      // a copy is never compared with anything: the next statement follows the real one
+      if (r.duplicateOf) { r.continuity = { status: 'duplicate', detail: `Duplicate of ${r.duplicateOf} — not compared` }; return; }
       if (!r.period || !r.period.from) { r.continuity = { status: 'unknown', detail: 'No dated rows' }; return; }
       if (!r.accountKey) {
         r.continuity = { status: 'unknown', detail: "Account number not found on the statement, so it can't be linked to other statements" };
@@ -2328,7 +2356,9 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
 
   /* ---------- pipeline: a batch of files (what the app's Extract step runs) ----------
      files: [{name, bytes: Uint8Array, password?}]. Returns one result per file,
-     each with .txns = rows as app transactions (categorised, path + check recorded). */
+     each with .txns = rows as app transactions (categorised, path + check recorded).
+     deps.knownStatements: [{name, fingerprint}] already extracted or committed
+     elsewhere; a file matching one is a duplicate and gets no .txns. */
   async function runBatch(files, deps) {
     const log = deps.log || (() => {});
     const results = [];
@@ -2347,9 +2377,12 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
         log(`  ✗ ${f.name}: ${msg}`, 'err');
       }
     }
+    markDuplicates(results, deps.knownStatements);
+    results.forEach(r => { if (r.duplicateOf) log(`  ⧉ ${r.name} is a duplicate of ${r.duplicateOf} — its rows are not used`, 'err'); });
     continuity(results.filter(r => !r.error));
     results.forEach(r => {
-      r.txns = r.rows.map(row => ({
+      // a duplicate's rows are already counted under the original statement
+      r.txns = r.duplicateOf ? [] : r.rows.map(row => ({
         post_date: row.iso, trans_date: row.trans_iso || row.iso,
         txn_type: row.amount >= 0 ? 'Credit' : 'Debit',
         reference: row.reference, amount: row.amount, fees: row.fee, balance: row.balance,
@@ -2362,7 +2395,8 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
 
   root.TF = {
     readPage, chooseDecoding, readableRatio, pageRuns, groupLines, parsePages,
-    checkRows, chooseFeeConvention, applyFeeConvention, FEE_CONVENTIONS, wholeStatement, continuity, categorise, validCategory, CATEGORIES, CATEGORY_RULES,
+    checkRows, chooseFeeConvention, applyFeeConvention, FEE_CONVENTIONS, wholeStatement, continuity,
+    fingerprint, markDuplicates, categorise, validCategory, CATEGORIES, CATEGORY_RULES,
     visionToRows, processFile, runBatch, isoDate,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : window);
@@ -2379,6 +2413,8 @@ const AppState = {
   reviewData:       [],     // merged, editable — pending commit
   committedData:    null,   // final dataset sent to Dashboard
   customCategories: [],     // user-added category names
+  knownStatements:  [],     // [{name, fingerprint}] every statement extracted so far, any
+                            // session — a renamed copy of one is flagged as a duplicate
 };
 
 // ── Persistence ──
@@ -2391,6 +2427,7 @@ const Store = (() => {
         committedData:    AppState.committedData,
         customCategories: AppState.customCategories,
         reconResults:     AppState.reconResults,
+        knownStatements:  AppState.knownStatements,
         savedAt:          new Date().toISOString(),
       };
       localStorage.setItem(KEY, JSON.stringify(payload));
@@ -2405,6 +2442,7 @@ const Store = (() => {
       if (p.committedData)    AppState.committedData     = p.committedData;
       if (p.customCategories) AppState.customCategories  = p.customCategories;
       if (p.reconResults)     AppState.reconResults      = p.reconResults;
+      if (p.knownStatements)  AppState.knownStatements   = p.knownStatements;
       return p.savedAt || true;
     } catch(e) { return false; }
   }
@@ -2412,7 +2450,7 @@ const Store = (() => {
     localStorage.removeItem(KEY);
     AppState.reviewData = [];
     AppState.committedData = null; AppState.customCategories = [];
-    AppState.reconResults = [];
+    AppState.reconResults = []; AppState.knownStatements = [];
   }
   function exportSidecar() {
     const payload = {
@@ -2420,6 +2458,7 @@ const Store = (() => {
       reviewData:    AppState.reviewData,
       committedData: AppState.committedData,
       customCategories: AppState.customCategories,
+      knownStatements:  AppState.knownStatements,
       exportedAt:    new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -2435,6 +2474,7 @@ const Store = (() => {
     if (p.reviewData)       AppState.reviewData       = p.reviewData;
     if (p.committedData)    AppState.committedData     = p.committedData;
     if (p.customCategories) AppState.customCategories  = p.customCategories;
+    if (p.knownStatements)  AppState.knownStatements   = p.knownStatements;
     save();
     return p.exportedAt;
   }
@@ -2817,6 +2857,7 @@ const Extractor = (() => {
 
   function _pill(r) {
     if (!r) return '<span class="pill pill-green">✓ Extracted</span>';
+    if (r.duplicateOf) return '<span class="pill pill-grey">⧉ Duplicate</span>';
     if (r.status === 'reconciled') return '<span class="pill pill-green">✓ Reconciled</span>';
     if (r.status === 'unverified') return '<span class="pill pill-grey">Unverified</span>';
     return '<span class="pill pill-red">✗ Needs attention</span>';
@@ -2927,11 +2968,16 @@ const Extractor = (() => {
     for (let i = 0; i < pending.length; i++) {
       const file = pending[i];
       _setProgress((i / pending.length) * 100, `${file.name} (${i + 1} of ${pending.length})`);
+      deps.knownStatements = _knownStatements(file.name);
       const [r] = await TF.runBatch([{ name: file.name, bytes: file.bytes, password: file.password }], deps);
       r.txns.forEach((t, k) => { t.id = `txn_${_idSeq()}`; r.rows[k].txnId = t.id; });
       file.result = r;
       file.extractedTxns = r.txns;
       file.extracted = r.status !== 'error';
+      if (r.fingerprint && !r.duplicateOf) {
+        AppState.knownStatements = AppState.knownStatements.filter(k => k.name !== r.name)
+          .concat({ name: r.name, fingerprint: r.fingerprint });
+      }
     }
 
     // Continuity is checked across EVERY extracted file, not just this run's.
@@ -2957,6 +3003,17 @@ const Extractor = (() => {
     sync();
   }
 
+  /* Statements a new file must not duplicate: committed in an earlier
+     session, extracted before (this session or a saved one), or earlier in
+     this run. The file's own name is left out, so re-extracting it is fine. */
+  function _knownStatements(exceptName) {
+    const meta = AppState.committedData && AppState.committedData.metadata;
+    const session = AppState.unlockedFiles.filter(f => f.result && !f.result.error)
+      .map(f => ({ name: f.name, fingerprint: f.result.fingerprint, duplicateOf: f.result.duplicateOf }));
+    return [...((meta && meta.statements) || []), ...(AppState.knownStatements || []), ...session]
+      .filter(k => k.fingerprint && !k.duplicateOf && k.name !== exceptName);
+  }
+
   // The persistable part of a file result: everything the status card needs.
   function _summary(r) {
     return {
@@ -2965,6 +3022,7 @@ const Extractor = (() => {
       closingSource: r.closingSource || '', rowSummary: r.rowSummary, counts: r.counts,
       printed: r.whole ? r.whole.printed : [], continuity: r.continuity || null, problems: r.problems || [],
       feeConvention: r.feeConvention === undefined ? 'unknown' : r.feeConvention,
+      fingerprint: r.fingerprint || null, duplicateOf: r.duplicateOf || null,
       unreadPages: r.unreadPages || [],
       badRows: (r.rows || []).filter(x => x.ok === false).map(x => ({
         id: x.txnId, page: x.page, date: x.iso, reference: x.reference, amount: x.amount + (x.fee || 0),
@@ -2990,17 +3048,20 @@ const Extractor = (() => {
     const list = AppState.reconResults || [];
     if (!list.length) { el.innerHTML = ''; return; }
 
-    const bad    = list.filter(_needsAttention);
-    const warn   = list.filter(r => !bad.includes(r) && r.status === 'unverified');
-    const rows   = list.reduce((s, r) => s + (r.rowSummary ? r.rowSummary.total : 0), 0);
-    const okRows = list.reduce((s, r) => s + (r.rowSummary ? r.rowSummary.passed : 0), 0);
-    const badRows = list.reduce((s, r) => s + r.badRows.length, 0);
-    const cls = bad.length ? 'bad' : warn.length ? 'warn' : 'ok';
-    const headline = bad.length
-      ? `✗ ${bad.length} of ${list.length} statement${list.length !== 1 ? 's' : ''} need${bad.length === 1 ? 's' : ''} attention` +
+    const dups   = list.filter(r => r.duplicateOf);
+    const real   = list.filter(r => !r.duplicateOf);
+    const bad    = real.filter(_needsAttention);
+    const warn   = real.filter(r => !bad.includes(r) && r.status === 'unverified');
+    const rows   = real.reduce((s, r) => s + (r.rowSummary ? r.rowSummary.total : 0), 0);
+    const okRows = real.reduce((s, r) => s + (r.rowSummary ? r.rowSummary.passed : 0), 0);
+    const badRows = real.reduce((s, r) => s + r.badRows.length, 0);
+    const cls = bad.length ? 'bad' : warn.length || dups.length ? 'warn' : 'ok';
+    const headline = (bad.length
+      ? `✗ ${bad.length} of ${real.length} statement${real.length !== 1 ? 's' : ''} need${bad.length === 1 ? 's' : ''} attention` +
         (badRows ? ` — ${badRows} row${badRows !== 1 ? 's' : ''} don't balance` : '')
       : warn.length ? `⚠ ${warn.length} statement${warn.length !== 1 ? 's' : ''} could not be fully verified`
-      : `✓ All ${list.length} statement${list.length !== 1 ? 's' : ''} reconciled — ${okRows}/${rows} rows verified`;
+      : `✓ All ${real.length} statement${real.length !== 1 ? 's' : ''} reconciled — ${okRows}/${rows} rows verified`) +
+      (dups.length ? ` · ${dups.length} duplicate${dups.length !== 1 ? 's' : ''} excluded` : '');
 
     el.innerHTML = `
       <div class="rc-summary ${cls}">
@@ -3012,11 +3073,12 @@ const Extractor = (() => {
 
   function _fileCard(r) {
     const cont = r.continuity;
-    const isBad = _needsAttention(r);
-    const cls = isBad ? 'bad' : r.status === 'unverified' ? 'warn' : 'ok';
+    const isBad = !r.duplicateOf && _needsAttention(r);
+    const cls = isBad ? 'bad' : r.status === 'unverified' || r.duplicateOf ? 'warn' : 'ok';
     const rs = r.rowSummary || { total: 0, passed: 0, failed: 0, unchecked: 0 };
     let status;
-    if (r.error) status = `✗ Could not read: ${_esc(r.error)}`;
+    if (r.duplicateOf) status = `⧉ Duplicate of ${_esc(r.duplicateOf)} — excluded from Review and the Dashboard`;
+    else if (r.error) status = `✗ Could not read: ${_esc(r.error)}`;
     else if (r.status === 'empty') status = '✗ No transactions found';
     else if ((r.unreadPages || []).length) status = `✗ Page${r.unreadPages.length !== 1 ? 's' : ''} ${r.unreadPages.join(', ')} could not be read`;
     else if (rs.failed) status = `✗ ${rs.failed} row${rs.failed !== 1 ? 's' : ''} don't balance`;
@@ -3030,6 +3092,7 @@ const Extractor = (() => {
       : cont.status === 'break' ? `<span class="no">✗ ${_esc(cont.detail)}</span>`
       : cont.status === 'gap' ? `${cont.months} month${cont.months !== 1 ? 's' : ''} missing before this statement, so the hand-over balance can't be checked`
       : cont.status === 'first' ? 'First statement for this account — nothing earlier to compare'
+      : cont.status === 'duplicate' ? 'Not compared — this file is a copy of another statement'
       : _esc(cont.detail || '—');
     const printed = (r.printed || []).map(p =>
       `<span class="${p.ok ? 'yes' : 'no'}">${p.ok ? '✓' : '✗'} ${_esc(p.name)}</span>`).join(' · ') || 'none printed';
@@ -4897,6 +4960,9 @@ const Review = (() => {
       metadata: {
         clientName:     '',
         filesProcessed: sources,
+        // fingerprints of the statements behind these rows, so a renamed copy
+        // uploaded in a later session is caught as a duplicate
+        statements:     (AppState.knownStatements || []).filter(k => sources.includes(k.name)),
         dateRange: { from: txns[0]?.post_date || '', to: txns[txns.length-1]?.post_date || '' },
         lastUpdated: new Date().toISOString()
       }

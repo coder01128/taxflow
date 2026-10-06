@@ -97,7 +97,8 @@ function loadFiles(dir) {
     for (const r of batchResults) {
       if (r.error) { fail(`a file could not be read: ${r.error}`); continue; }
       const tot = r.whole.printed.map(p => `${p.name}:${p.ok ? 'ok' : 'MISMATCH'}`).join(',') || 'none printed';
-      const fm = Object.values(r.fontModes).includes('encoding') ? 'ToUnicode broken → font encoding' : 'normal';
+      const fm = (Object.values(r.fontModes).includes('encoding') ? 'ToUnicode broken → font encoding' : 'normal') +
+      (r.duplicateOf ? ` | DUPLICATE of ${aliases[r.duplicateOf] ? '[' + aliases[r.duplicateOf] + ']' : 'an earlier file'}, ${r.txns.length} txns passed on` : '');
       console.log(`${label(r).padEnd(W)} | ${String(r.rows.length).padStart(4)} | ${(r.rowSummary.passed + '/' + r.rowSummary.total).padStart(10)} | ` +
         `${(r.whole.ok ? 'PASS' : 'FAIL').padEnd(10)} | ${tot.padEnd(25)} | ${r.continuity.status.padEnd(10)} | ` +
         `${(r.counts.text + '/' + r.counts.vision).padEnd(11)} | ${String(r.feeConvention === null ? 'NONE FITS' : r.feeConvention).padEnd(14)} | ` +
@@ -110,7 +111,12 @@ function loadFiles(dir) {
           fail(`${label(r)}: expected ${e.rows} rows, ${e.passed} passed, whole ${e.whole}; got ${r.rows.length}, ${r.rowSummary.passed}, ${r.whole.ok}`);
         else if (e.fee !== undefined && e.fee !== r.feeConvention)
           fail(`${label(r)}: expected fee convention ${e.fee}; got ${r.feeConvention}`);
-        else { expMet++; pass(`${label(r)} matches acceptance (${e.rows} rows, ${e.passed}/${e.rows}, whole ${e.whole ? 'PASS' : 'FAIL'}${e.fee ? ', fees ' + e.fee : ''})`); }
+        else if ((e.duplicateOf || null) !== (r.duplicateOf ? aliases[r.duplicateOf] || '(no alias)' : null))
+          fail(`${label(r)}: expected duplicate of ${e.duplicateOf || 'nothing'}; got ${r.duplicateOf ? aliases[r.duplicateOf] || '(no alias)' : 'nothing'}`);
+        else if (r.duplicateOf && r.txns.length)
+          fail(`${label(r)}: duplicate still passes ${r.txns.length} transactions on`);
+        else { expMet++; pass(`${label(r)} matches acceptance (${e.rows} rows, ${e.passed}/${e.rows}, whole ${e.whole ? 'PASS' : 'FAIL'}${e.fee ? ', fees ' + e.fee : ''}` +
+          `${r.duplicateOf ? `, duplicate of [${aliases[r.duplicateOf]}], 0 rows passed on` : ''})`); }
       }
     }
   }
@@ -120,6 +126,21 @@ function loadFiles(dir) {
   const unc = cats.filter(t => t.category === 'Uncategorised').length;
   console.log(`categorised: ${cats.length - unc}/${cats.length} rows matched a keyword rule; ` +
     `${cats.every(t => TF.CATEGORIES.includes(t.category)) ? 'all' : 'NOT all'} categories valid`);
+
+  // ---- 1b. duplicates from an earlier session: renamed copies, by content ----
+  console.log('\n== 1b. Duplicates against earlier sessions (in memory) ==');
+  {
+    const real = ok.filter(r => !r.duplicateOf).slice(0, 2);
+    const known = real.map(r => ({ name: r.name, fingerprint: r.fingerprint }));
+    const copies = real.map((r, i) => Object.assign({}, files.find(f => f.name === r.name), { name: `renamed-copy-${i + 1}.pdf` }));
+    const again = await TF.runBatch(copies, baseDeps({ knownStatements: known }));
+    const flagged = again.filter((c, i) => c.duplicateOf === real[i].name && c.txns.length === 0 && c.continuity.status === 'duplicate');
+    console.log(`${real.length} statement(s) "committed" earlier, renamed copies uploaded later: ${flagged.length} flagged duplicate, ` +
+      `${again.reduce((s, c) => s + c.txns.length, 0)} txns passed on`);
+    flagged.length === real.length ? pass('renamed copies of earlier-session statements flagged and excluded') : fail('cross-session duplicates');
+    const same = await TF.runBatch([Object.assign({}, files.find(f => f.name === real[0].name))], baseDeps({ knownStatements: known }));
+    !same[0].duplicateOf ? pass('re-extracting the same file name is not a duplicate') : fail('same-name re-extract flagged');
+  }
 
   // ---- 2. sabotage: the checks must be able to fail ----
   console.log('\n== 2. Sabotage tests (in memory) ==');
@@ -176,6 +197,10 @@ function loadFiles(dir) {
   // ---- 3. continuity: synthetic consecutive statement ----
   console.log('\n== 3. Continuity ==');
   for (const r of ok) console.log(`${label(r).padEnd(W)} | ${r.continuity.status}${r.continuity.months ? ' (' + r.continuity.months + ' month(s) missing)' : ''}`);
+  {
+    const brk = ok.filter(r => r.continuity.status === 'break');
+    brk.length ? fail(`${brk.length} continuity break(s) in the real statements`) : pass('no continuity breaks (duplicates skipped)');
+  }
   {
     const r = ok[0];
     const good = { name: 'next', bank: r.bank, accountKey: r.accountKey, opening: r.closing, closing: 0, period: { from: nextMonth(r.period.to), to: nextMonth(r.period.to) } };

@@ -17,7 +17,8 @@ node tests/run-harness.js --dir C:\ccode\test-statements --expect C:\ccode\taxfl
   `{"Capitec 2024-09": {"rows": 36, "passed": 36, "whole": true}}`. Keep it with the statements, not in the repo.
   An expectation may instead be keyed by file name (two statements can end in the same month), with an
   `"alias"` that is printed in place of the name. Optional `"fee"`: the expected fee convention
-  (`separate`, `included` or `none`).
+  (`separate`, `included` or `none`). Optional `"duplicateOf"`: the alias of the statement a file
+  copies (a file without it must not be flagged as a duplicate).
 - Both flags repeat: `--dir A --dir B --expect a.json --expect b.json` runs each folder as its own batch
   and merges the expectation files.
 - Password-protected PDFs: set `TAXFLOW_PDF_PW` in the environment for that run.
