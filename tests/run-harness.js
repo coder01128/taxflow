@@ -142,6 +142,31 @@ function loadFiles(dir) {
     !same[0].duplicateOf ? pass('re-extracting the same file name is not a duplicate') : fail('same-name re-extract flagged');
   }
 
+  // ---- 1c. bank charges: every fee that reduced the balance, counted once ----
+  console.log('\n== 1c. Bank charges (what the dashboard counts) ==');
+  console.log('statement'.padEnd(W) + ' | fee conv  | printed fees | Bank Charges | match | spending before → after (fees column ignored → included) | net movement');
+  for (const r of ok.filter(x => !x.duplicateOf)) {
+    const pf = r.whole.printed.find(p => p.name === 'fees');
+    const bc = TF.bankCharges(r.txns);
+    const r2 = n => Math.round(n * 100) / 100;
+    // before: the dashboard summed row amounts only; after: every app transaction
+    const before = r2(-r.rows.reduce((s, x) => s + (x.amount < 0 ? x.amount : 0), 0));
+    const after = r2(-r.txns.reduce((s, t) => s + (t.amount < 0 ? t.amount : 0), 0));
+    // exactly once: the transactions add up to the same money as the rows (amount + fee)
+    const netRows = r2(r.rows.reduce((s, x) => s + x.amount + x.fee, 0));
+    const netTxns = r2(r.txns.reduce((s, t) => s + t.amount, 0));
+    const match = pf ? Math.abs(pf.printed - bc) < 0.005 : null;
+    console.log(`${label(r).padEnd(W)} | ${String(r.feeConvention).padEnd(9)} | ${(pf ? pf.printed.toFixed(2) : 'not printed').padStart(12)} | ` +
+      `${bc.toFixed(2).padStart(12)} | ${match === null ? '  -  ' : match ? ' yes ' : ' NO  '} | ${before.toFixed(2)} → ${after.toFixed(2)} | ` +
+      `${netRows === netTxns ? 'same' : 'DIFFERENT'} (${netTxns.toFixed(2)})`);
+    if (match === false) fail(`${label(r)}: Bank Charges ${bc.toFixed(2)} ≠ printed fee total ${pf.printed.toFixed(2)}`);
+    if (netRows !== netTxns) fail(`${label(r)}: transactions move ${netTxns.toFixed(2)}, rows move ${netRows.toFixed(2)} — a fee is double counted or lost`);
+  }
+  {
+    const withTotal = ok.filter(x => !x.duplicateOf && x.whole.printed.some(p => p.name === 'fees'));
+    console.log(`bank charges = printed fee total on ${withTotal.filter(x => Math.abs(x.whole.printed.find(p => p.name === 'fees').printed - TF.bankCharges(x.txns)) < 0.005).length}/${withTotal.length} statement(s) with a printed fee total`);
+  }
+
   // ---- 2. sabotage: the checks must be able to fail ----
   console.log('\n== 2. Sabotage tests (in memory) ==');
   const clone = rows => rows.map(r => Object.assign({}, r));

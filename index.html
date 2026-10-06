@@ -2167,7 +2167,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
 
   /* ---------- categorisation (deterministic keyword rules) ---------- */
   const CATEGORIES = [
-    'ATM / Cash', 'Clothing & Apparel', 'Dining Out', "Directors' & Members' Loans", 'Entertainment',
+    'ATM / Cash', 'Bank Charges', 'Clothing & Apparel', 'Dining Out', "Directors' & Members' Loans", 'Entertainment',
     'Freelance Income', 'Fuel', 'Groceries', 'Home & Maintenance', 'Insurance', 'Investment Income',
     'Medical', 'Mobile & Data', 'Salary / Income', 'Subscriptions', 'Trading & Evaluation Fees',
     'Trading Capital Drawdown', 'Trading P&L', 'Transfers', 'Transport & Rides', 'Uncategorised', 'Utilities',
@@ -2382,21 +2382,57 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     continuity(results.filter(r => !r.error));
     results.forEach(r => {
       // a duplicate's rows are already counted under the original statement
-      r.txns = r.duplicateOf ? [] : r.rows.map(row => ({
-        post_date: row.iso, trans_date: row.trans_iso || row.iso,
-        txn_type: row.amount >= 0 ? 'Credit' : 'Debit',
-        reference: row.reference, amount: row.amount, fees: row.fee, balance: row.balance,
-        category: validCategory(categorise(row.reference), deps.customCategories),
-        source_file: r.name, path: row.path, check: row.ok, expected: row.expected, page: row.page,
-      }));
+      r.txns = r.duplicateOf ? [] : rowsToTxns(r, deps.customCategories);
     });
     return results;
+  }
+
+  /* ---------- rows → app transactions, with bank charges ----------
+     Every fee that actually reduced the balance becomes exactly one
+     'Bank Charges' amount, so spending includes it once:
+       - row.fee (non-zero only under the `separate` convention, or from
+         vision): its own Bank Charges transaction next to the row, which
+         keeps its own category. A row that is nothing but a fee is the
+         Bank Charges transaction itself.
+       - a fee-marked debit (row.star, e.g. "*"): that debit is the fee, so
+         the row is categorised Bank Charges (any non-fee remainder stays
+         as its own transaction).
+     Memo fees under the `included` convention are 0 here: the bank takes
+     them on a fee-marked row, which is what gets counted. Each txn records
+     the parser row it came from in .row; fee txns have kind 'fee'. */
+  function rowsToTxns(r, customCategories) {
+    const out = [];
+    r.rows.forEach((row, k) => {
+      const base = {
+        post_date: row.iso, trans_date: row.trans_iso || row.iso, balance: row.balance,
+        source_file: r.name, path: row.path, check: row.ok, expected: row.expected, page: row.page, row: k,
+      };
+      const txn = (amount, reference, category, extra) => Object.assign({}, base, {
+        txn_type: amount >= 0 ? 'Credit' : 'Debit', reference, amount: round2(amount), fees: 0, category,
+      }, extra || {});
+      const own = validCategory(categorise(row.reference), customCategories);
+      const star = row.star || 0;
+      const rest = round2(row.amount - star);
+      if (rest !== 0 || (!star && !row.fee)) out.push(txn(rest, row.reference, own));
+      if (star) out.push(txn(star, row.reference, 'Bank Charges', rest !== 0 ? { kind: 'fee' } : null));
+      if (row.fee) {
+        const alone = rest === 0 && !star;
+        out.push(txn(row.fee, alone ? row.reference : 'Bank fee: ' + row.reference, 'Bank Charges', alone ? null : { kind: 'fee' }));
+      }
+    });
+    return out;
+  }
+
+  /* Bank charges per statement, as the dashboard counts them: the sum of
+     Bank Charges transactions (fees are negative, so this is money out). */
+  function bankCharges(txns) {
+    return round2(-txns.filter(t => t.category === 'Bank Charges').reduce((s, t) => s + t.amount, 0));
   }
 
   root.TF = {
     readPage, chooseDecoding, readableRatio, pageRuns, groupLines, parsePages,
     checkRows, chooseFeeConvention, applyFeeConvention, FEE_CONVENTIONS, wholeStatement, continuity,
-    fingerprint, markDuplicates, categorise, validCategory, CATEGORIES, CATEGORY_RULES,
+    fingerprint, markDuplicates, rowsToTxns, bankCharges, categorise, validCategory, CATEGORIES, CATEGORY_RULES,
     visionToRows, processFile, runBatch, isoDate,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : window);
@@ -2970,7 +3006,8 @@ const Extractor = (() => {
       _setProgress((i / pending.length) * 100, `${file.name} (${i + 1} of ${pending.length})`);
       deps.knownStatements = _knownStatements(file.name);
       const [r] = await TF.runBatch([{ name: file.name, bytes: file.bytes, password: file.password }], deps);
-      r.txns.forEach((t, k) => { t.id = `txn_${_idSeq()}`; r.rows[k].txnId = t.id; });
+      // a row's txnId is its first transaction (a split-off fee comes after it)
+      r.txns.forEach(t => { t.id = `txn_${_idSeq()}`; if (!r.rows[t.row].txnId) r.rows[t.row].txnId = t.id; });
       file.result = r;
       file.extractedTxns = r.txns;
       file.extracted = r.status !== 'error';
@@ -3174,6 +3211,7 @@ const CAT_COLOURS = {
   'Mobile & Data':              '#38BDF8',
   'Home & Maintenance':         '#86EFAC',
   'ATM / Cash':                 '#94A3B8',
+  'Bank Charges':               '#F87171',
   'Entertainment':              '#C084FC',
   'Transfers':                  '#64748B',
   "Directors' & Members' Loans":'#FBBF24',
