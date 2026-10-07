@@ -78,5 +78,76 @@ console.log('\n== one-click correction → memory + same-merchant rows ==');
   check('memory never touches a bank fee', fee.category === 'Bank Charges');
 }
 
-console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL CATEGORISATION CHECKS PASSED');
-process.exit(failures ? 1 : 0);
+(async () => {
+  console.log('\n== AI suggestions (mocked AI) ==');
+  const rows = () => {
+    const t = [
+      tx('POS Local Purchase 4000123412341234 ZEBRA GADGETS SANDTON AUTH ID 123456', { amount: -1234.56 }),
+      tx('ZEBRA GADGETS 400012XXXXXX9876', { amount: -99.99 }),           // same merchant: asked once
+      tx('QUOKKA STUDIO 400012XXXXXX9876', { amount: -250 }),
+      tx('PANGOLIN PRINTS 400012XXXXXX9876', { amount: -80 }),
+      tx('WOOLWORTHS FOOD 400012XXXXXX9876'),                               // rule → never asked
+      tx('ACME DELI 400012XXXXXX9876'),                                     // confirmed memory → never asked
+      tx('Immediate Payment J Smith rent', { amount: -9500 }),              // payment to a person → never asked
+      tx('Send money +27821234567', { amount: -300 }),                      // transfer → never asked
+      tx('Outward EFT ACME ACCOUNTING To 1234567890 123456'),               // EFT to someone → never asked
+      tx('Mr T Ndlovu', { amount: 1500 }),                                  // looks like a person → never asked
+      tx('Lee', { amount: -500 }),                                          // one typed word, no card marker → could be a name
+      tx('Bank fee: ZEBRA GADGETS', { category: 'Bank Charges', bank_fee: true }),
+    ];
+    return t;
+  };
+  const memory = () => ({ 'ACME DELI': { category: 'Dining Out', source: 'confirmed', times: 1 } });
+
+  // 1. what would be sent
+  {
+    const t = rows(), mem = memory();
+    TF.applyCategories(t, mem, []);
+    const sent = [];
+    await TF.suggestCategories(t, mem, async (keys) => { sent.push(keys); return { suggestions: {} }; }, []);
+    const payload = JSON.stringify({ keys: sent[0] });
+    check('exactly one batched call for the run', sent.length === 1, sent.length);
+    check('only unseen, unruled, non-private merchant keys are sent', JSON.stringify(sent[0]) === JSON.stringify(['PANGOLIN PRINTS', 'QUOKKA STUDIO', 'ZEBRA GADGETS']), JSON.stringify(sent[0]));
+    check('payload carries no amounts, dates, numbers or raw references', !/\d/.test(payload) && !/POS|AUTH|XXXX|2026|1234|99\.99/.test(payload), payload);
+    check('transfers / payments to people go straight to Needs review', t.slice(6, 11).every(x => x.private && x.cat_source === 'review'));
+  }
+  // 2. answers: high → AI suggestion, low → Needs review with a hint, invalid → Needs review
+  {
+    const t = rows(), mem = memory();
+    TF.applyCategories(t, mem, []);
+    const r = await TF.suggestCategories(t, mem, async () => ({ suggestions: {
+      'ZEBRA GADGETS': { category: 'Home & Maintenance', confidence: 'high' },
+      'QUOKKA STUDIO': { category: 'Entertainment', confidence: 'low' },
+      'PANGOLIN PRINTS': { category: 'Made Up Category', confidence: 'high' },
+    } }), []);
+    check('high confidence → AI suggestion on every row of that merchant', t[0].cat_source === 'ai' && t[1].cat_source === 'ai' && t[0].category === 'Home & Maintenance');
+    check('low confidence → Needs review, suggestion shown as a hint only', t[2].cat_source === 'review' && t[2].category === 'Uncategorised' && t[2].ai_hint === 'Entertainment');
+    check('a category outside the fixed list is rejected → Needs review', t[3].cat_source === 'review' && !t[3].ai_hint);
+    check('answers are remembered, so nothing is asked twice', TF.aiCandidates(t, mem).length === 0 && r.answered === 2, r.answered);
+    check('rule, confirmed and bank-fee rows untouched', t[4].cat_source === 'rule' && t[5].cat_source === 'confirmed' && t[11].category === 'Bank Charges');
+    // a human confirmation then wins over the AI suggestion for that merchant
+    TF.confirmCategory(t, t[0], 'Entertainment', mem);
+    check('a human correction overrides the AI suggestion on the same merchant', t[1].category === 'Entertainment' && t[1].cat_source === 'confirmed');
+  }
+  // 3. failure and opened-from-disk: nothing breaks, rows stay Needs review
+  {
+    const t = rows(), mem = memory();
+    TF.applyCategories(t, mem, []);
+    const r = await TF.suggestCategories(t, mem, async () => { throw new Error('mock HTTP 502'); }, []);
+    check('AI call fails → error reported, rows stay Needs review', r.error === 'mock HTTP 502' && t[0].cat_source === 'review' && t[2].cat_source === 'review');
+    check('a failed call is not remembered (asked again next run)', TF.aiCandidates(t, mem).length === 3);
+    const off = await TF.suggestCategories(t, mem, null, []);
+    check('no AI available (opened from disk) → not called, rows stay Needs review', off.offline && off.calls === 0 && t[0].cat_source === 'review');
+  }
+  // 4. more than 200 new merchants → requests of at most 200 keys
+  {
+    const many = Array.from({ length: 450 }, (_, i) => tx('MERCHANT ' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[i % 26] + ' ' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(i / 26) % 26]));
+    TF.applyCategories(many, {}, []);
+    const sizes = [];
+    await TF.suggestCategories(many, {}, async (keys) => { sizes.push(keys.length); return { suggestions: {} }; }, []);
+    check('450 new merchants → 3 requests of at most 200', JSON.stringify(sizes) === '[200,200,50]', JSON.stringify(sizes));
+  }
+
+  console.log(failures ? `\n${failures} FAILURE(S)` : '\nALL CATEGORISATION CHECKS PASSED');
+  process.exit(failures ? 1 : 0);
+})();

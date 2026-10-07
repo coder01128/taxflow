@@ -2310,26 +2310,33 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
 
   /* ---------- transfers and payments to people: never sent to AI ----------
      A row is private when its reference uses transfer / payment-to-person
-     wording, or its merchant key looks like a person's name (a title, or
-     initials followed by a surname). Private rows still get rules and a
+     wording, or its merchant key looks like a person's name: a title,
+     initials followed by a surname, or a single word typed as a payment
+     reference (no card / terminal / debit-order marker on the line — card
+     purchases always carry one). Private rows still get rules and a
      human's confirmed memory, but never an AI suggestion. A bank fee for a
      transfer ("INSTANT PAYMENT FEE") is not private. */
   const PRIVATE_WORDING = [
     'TRANSFER', 'PAYMENT TO', 'PAYMENT FROM', 'IMMEDIATE PAYMENT', 'INSTANT PAYMENT', 'IB PAYMENT',
     'IB TRANSFER', 'EFT TO', 'EFT FROM', 'OUTWARD EFT', 'INWARD EFT', 'SEND MONEY', 'SEND IMALI',
     'IMALI', 'CASH SEND', 'CASHSEND', 'INSTANT MONEY', 'PAYSHAP', 'OWN ACCOUNT', 'INTER ACCOUNT',
-    'INTERACCOUNT', 'LOAN ACCOUNT', 'REAL TIME CLEARING', 'RTC PAYMENT',
+    'INTERACCOUNT', 'LOAN ACCOUNT', 'LOAN', 'REAL TIME CLEARING', 'RTC PAYMENT', 'BDAY', 'BIRTHDAY',
+    'GIFT', 'POCKET MONEY', 'ALLOWANCE',
   ];
   const PRIVATE_RX = new RegExp('(?:^|[^A-Z])(?:' + PRIVATE_WORDING.map(w => w.replace(/ /g, '[\\s-]*')).join('|') + ')(?![A-Z])');
   const PERSON_RX = [
     /^(?:MR|MRS|MS|MISS|DR|PROF|ADV) [A-Z]/,             // a title
     /^(?:[A-Z] ){1,3}[A-Z']{2,}(?: [A-Z']{2,})?$/,         // initials + surname: "J SMITH", "A B DLAMINI"
   ];
+  // something only a card / terminal / debit-order line carries
+  const MERCHANT_MARKER_RX = /\d{4,}[X*]{4,}\d{3,4}|\bPOS\b|PURCHASE|AUTH\s?I\s?D|DEBIT ORDER|HTTPS?:|WWW\.|\.COM\b|\*/;
   function isPrivate(reference, key) {
     const ref = String(reference || '').toUpperCase();
     if (/\bFEES?\s*$/.test(ref.replace(/[^A-Z ]+/g, ' ').trim())) return false;
     if (PRIVATE_RX.test(ref)) return true;
-    return !!key && PERSON_RX.some(rx => rx.test(key));
+    if (!key) return false;
+    if (PERSON_RX.some(rx => rx.test(key))) return true;
+    return !/\s/.test(key) && !MERCHANT_MARKER_RX.test(ref);   // one typed word: could be a name
   }
 
   /* ---------- category precedence and merchant memory ----------
@@ -2364,6 +2371,59 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
       set('Uncategorised', 'review');
     });
     return txns;
+  }
+
+  /* ---------- AI suggestions: unseen merchants only ----------
+     Only normalised merchant keys are ever sent (never amounts, balances,
+     dates, account numbers, file names or raw references), only for rows
+     that still need review, that no rule and no memory entry covers, and
+     that are not private (transfers / payments to people). Answers go into
+     memory as source 'ai' so the same merchant is never asked about twice;
+     confirmed memory is never overwritten.
+     call(keys) → Promise<{ suggestions: { key: {category, confidence} } }>.
+     With no call (opened from disk) or on failure, rows stay Needs review. */
+  const AI_MAX_KEYS = 200;
+  const AI_KEY_RX = /^[A-Z0-9&' ]{1,120}$/;   // what api/categorise.js accepts
+  function aiCandidates(txns, memory) {
+    const mem = memory || {};
+    const keys = new Set();
+    txns.forEach(t => {
+      const k = t.merchant_key;
+      if (t.locked || t.bank_fee || t.private || t.cat_source !== 'review' || !k || mem[k]) return;
+      if (AI_KEY_RX.test(k) && !/\d{3,}/.test(k)) keys.add(k);
+    });
+    return [...keys].sort();
+  }
+  function applyAiSuggestions(memory, asked, suggestions) {
+    asked.forEach(k => {
+      if (memory[k] && memory[k].source === 'confirmed') return;
+      const s = suggestions && suggestions[k];
+      const ok = s && s.category !== 'Uncategorised' && validCategory(s.category, []) === s.category &&
+        (s.confidence === 'high' || s.confidence === 'low');
+      // a rejected answer is remembered too (no category), so it isn't paid for again
+      memory[k] = ok ? { category: s.category, source: 'ai', confidence: s.confidence, times: 0 }
+        : { category: null, source: 'ai', confidence: 'none', times: 0 };
+    });
+  }
+  async function suggestCategories(txns, memory, call, customCategories) {
+    const keys = aiCandidates(txns, memory);
+    const out = { keys: keys.length, calls: 0, answered: 0, error: null, offline: false };
+    if (!keys.length) return out;
+    if (!call) { out.offline = true; return out; }
+    for (let i = 0; i < keys.length; i += AI_MAX_KEYS) {
+      const chunk = keys.slice(i, i + AI_MAX_KEYS);
+      try {
+        out.calls++;
+        const res = await call(chunk);
+        applyAiSuggestions(memory, chunk, res && res.suggestions);
+        out.answered += chunk.filter(k => memory[k] && memory[k].category).length;
+      } catch (e) {
+        out.error = (e && e.message) || String(e);
+        break;
+      }
+    }
+    applyCategories(txns, memory, customCategories);
+    return out;
   }
 
   /* A human sets txn's category: it is saved to memory as Confirmed and
@@ -2632,7 +2692,8 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     checkRows, chooseFeeConvention, applyFeeConvention, FEE_CONVENTIONS, wholeStatement, continuity,
     fingerprint, markDuplicates, rowsToTxns, bankCharges, categorise,
     merchantKey, MERCHANT_PREFIXES, MERCHANT_SUFFIXES, PLACE_SUFFIXES,
-    applyCategories, confirmCategory, isPrivate, PRIVATE_WORDING, validCategory, CATEGORIES, CATEGORY_RULES,
+    applyCategories, confirmCategory, isPrivate, PRIVATE_WORDING,
+    aiCandidates, applyAiSuggestions, suggestCategories, AI_MAX_KEYS, validCategory, CATEGORIES, CATEGORY_RULES,
     visionToRows, processFile, runBatch, isoDate,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : window);
@@ -3186,6 +3247,23 @@ const Extractor = (() => {
     return data.result;
   }
 
+  // Sends ONLY normalised merchant keys to /api/categorise.
+  async function _callCategorise(keys) {
+    let resp;
+    try {
+      resp = await fetch('/api/categorise', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keys }),
+      });
+    } catch (e) {
+      throw new Error('could not reach the categorisation server (' + e.message + ')');
+    }
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || `server error ${resp.status}`);
+    return data;
+  }
+
   async function run() {
     if (!AppState.unlockedFiles.length) return;
 
@@ -3237,6 +3315,17 @@ const Extractor = (() => {
     allTxns.sort((a, b) => (a.post_date || '').localeCompare(b.post_date || ''));
     AppState.extractedData = allTxns;
     Review.mergeFromExtractor(allTxns);
+
+    // AI suggestions for merchants no rule or memory knows: one batched call
+    // per run (200 keys per request), merchant keys only.
+    const online = /^https?:$/.test(location.protocol);
+    const ai = await TF.suggestCategories(AppState.reviewData, AppState.merchantMemory,
+      online ? _callCategorise : null, AppState.customCategories);
+    if (ai.keys) {
+      if (ai.offline) _log(`${ai.keys} new merchant${ai.keys !== 1 ? 's' : ''} left as Needs review — AI suggestions only work in the online app.`, 'info');
+      else if (ai.error) _log(`AI category suggestions failed (${ai.error}) — those rows stay Needs review.`, 'err');
+      else _log(`AI suggested categories for ${ai.answered} of ${ai.keys} new merchant${ai.keys !== 1 ? 's' : ''} (merchant names only were sent).`, 'ok');
+    }
     Store.save();
 
     _setProgress(100, 'Complete');

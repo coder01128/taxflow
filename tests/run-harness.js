@@ -201,6 +201,16 @@ function loadFiles(dir) {
     const avg = later.length ? later.reduce((s, p) => s + p.hit / p.rows, 0) / later.length : 0;
     const pooled = later.reduce((s, p) => s + p.hit, 0) / Math.max(1, later.reduce((s, p) => s + p.rows, 0));
     console.log(`memory potential (statements 2..${per.length}): average ${(100 * avg).toFixed(1)}% per statement, ${(100 * pooled).toFixed(1)}% of their rows`);
+    // what an empty memory would send to the AI for these statements (nothing is sent here)
+    const txns = stmts.flatMap(x => x.txns);
+    const bySource = txns.reduce((m, t) => (m[t.cat_source] = (m[t.cat_source] || 0) + 1, m), {});
+    const priv = txns.filter(t => t.private).length;
+    const keysToAsk = TF.aiCandidates(txns, {});
+    const askRows = txns.filter(t => keysToAsk.includes(t.merchant_key)).length;
+    console.log(`transactions ${txns.length} by source: ${Object.entries(bySource).sort().map(([k, v]) => k + ' ' + v).join(', ')} | ` +
+      `private (transfers / people, never sent) ${priv} | AI would be asked about ${keysToAsk.length} merchant keys covering ${askRows} rows, ` +
+      `in ${Math.ceil(keysToAsk.length / TF.AI_MAX_KEYS)} request(s)`);
+    if (keysToAsk.some(k => !/^[A-Z0-9&' ]{1,120}$/.test(k) || /\d{3,}/.test(k))) fail('a key that would be sent is not a clean merchant key');
   }
 
   // ---- 2. sabotage: the checks must be able to fail ----
