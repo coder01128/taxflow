@@ -176,6 +176,33 @@ function loadFiles(dir) {
     console.log(`bank charges = printed fee total on ${withTotal.filter(x => Math.abs(x.whole.printed.find(p => p.name === 'fees').printed - TF.bankCharges(x.txns)) < 0.005).length}/${withTotal.length} statement(s) with a printed fee total`);
   }
 
+  // ---- 1d. categorisation baseline: counts only, never merchant names ----
+  console.log('\n== 1d. Categorisation baseline (rows, counts only) ==');
+  {
+    const stmts = ok.filter(x => !x.duplicateOf).slice().sort((a, b) => (a.period.from || '').localeCompare(b.period.from || ''));
+    const rows = stmts.flatMap(x => x.rows);
+    const ruled = rows.filter(x => TF.categorise(x.reference) !== 'Uncategorised').length;
+    const keys = rows.map(x => TF.merchantKey(x.reference));
+    const uniq = new Set(keys.filter(Boolean));
+    const pct = (n, d) => d ? (100 * n / d).toFixed(1) + '%' : '-';
+    console.log(`rows ${rows.length} | rules alone categorise ${ruled} (${pct(ruled, rows.length)}) | ` +
+      `unique merchant keys ${uniq.size} | rows with no key ${keys.filter(k => !k).length}`);
+    // memory potential: statements in date order; a row "hits" if its key was seen in an EARLIER statement
+    const seen = new Set();
+    const per = [];
+    for (const st of stmts) {
+      const ks = st.rows.map(x => TF.merchantKey(x.reference));
+      const hit = ks.filter(k => k && seen.has(k)).length;
+      per.push({ month: st.period.from.slice(0, 7), bank: st.bank, rows: ks.length, hit });
+      ks.forEach(k => { if (k) seen.add(k); });
+    }
+    per.forEach(p => console.log(`  ${p.month} ${p.bank.padEnd(8)} | ${String(p.rows).padStart(4)} rows | key seen in an earlier statement: ${String(p.hit).padStart(4)} (${pct(p.hit, p.rows)})`));
+    const later = per.slice(1);
+    const avg = later.length ? later.reduce((s, p) => s + p.hit / p.rows, 0) / later.length : 0;
+    const pooled = later.reduce((s, p) => s + p.hit, 0) / Math.max(1, later.reduce((s, p) => s + p.rows, 0));
+    console.log(`memory potential (statements 2..${per.length}): average ${(100 * avg).toFixed(1)}% per statement, ${(100 * pooled).toFixed(1)}% of their rows`);
+  }
+
   // ---- 2. sabotage: the checks must be able to fail ----
   console.log('\n== 2. Sabotage tests (in memory) ==');
   const clone = rows => rows.map(r => Object.assign({}, r));
