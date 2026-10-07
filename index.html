@@ -197,6 +197,23 @@ body {
 .btn-sm { padding: 7px 13px; font-size: 13px; }
 .btn-danger { background: var(--expense); color: #fff; }
 .btn-danger:hover { background: #7F1D1D; }
+.btn-outline { background: var(--surface); color: var(--accent); border: 2px solid var(--accent); }
+.btn-outline:hover:not(:disabled) { background: var(--accent-light); color: #3730A3; }
+.btn-outline:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Centred confirm modal (never a bottom sheet) */
+.tf-modal-overlay {
+  position: fixed; inset: 0; z-index: 500; background: rgba(17,24,39,.55);
+  display: flex; align-items: center; justify-content: center; padding: 16px;
+}
+.tf-modal {
+  background: var(--surface); color: var(--text-1); border-radius: var(--radius);
+  box-shadow: 0 20px 50px rgba(0,0,0,.30); width: 100%; max-width: 460px; padding: 22px 24px;
+}
+.tf-modal h3 { font-size: 17px; margin-bottom: 10px; }
+.tf-modal p, .tf-modal li { font-size: 14px; color: var(--text-1); line-height: 1.5; }
+.tf-modal ul { margin: 8px 0 0 20px; }
+.tf-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
 
 /* Status pills */
 .pill {
@@ -1166,6 +1183,24 @@ body {
   background:var(--accent-light); color:var(--accent); border-color:var(--accent);
 }
 .rv-cat-badge.locked { cursor:default; opacity:.65; }
+/* Category source — every category says where it came from */
+.rv-cat-badge { color:var(--text-1); }
+.rv-cat-dot { width:8px; height:8px; border-radius:50%; display:inline-block; flex-shrink:0; }
+.rv-src { font-size:13px; font-weight:700; padding:1px 7px; border-radius:10px; line-height:1.4; }
+.rv-cat-badge.src-confirmed { border:1px solid var(--income); background:var(--income-bg); }
+.rv-src-confirmed { background:var(--income); color:#fff; }
+.rv-cat-badge.src-rule { border:1px solid #9CA3AF; background:var(--surface-2); }
+.rv-src-rule { background:#E5E7EB; color:#374151; }
+.rv-cat-badge.src-ai { border:2px dashed var(--accent); background:var(--accent-light); }
+.rv-src-ai { background:var(--accent); color:#fff; }
+.rv-cat-badge.src-review { border:2px solid var(--warning); background:#FFFBEB; }
+.rv-src-review { background:#92400E; color:#fff; }
+.rv-ai-hint { display:block; margin-top:3px; font-size:13px; color:#3730A3; }
+.rv-info {
+  display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
+  padding:10px 16px; margin-bottom:12px; border-radius:var(--radius);
+  background:var(--accent-light); border:2px dashed var(--accent); color:var(--text-1); font-size:14px;
+}
 .rv-cat-badge.locked::after { content:'🔒'; font-size:13px; margin-left:3px; }
 .rv-cat-picker {
   position:fixed; z-index:200;
@@ -1342,8 +1377,10 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
             <select class="db-filter-select" id="rv-cat-filter">
               <option value="">All categories</option>
             </select>
-            <select class="db-filter-select" id="rv-check-filter" title="Filter by balance check and extraction path">
-              <option value="">All rows</option>
+            <select class="db-filter-select" id="rv-check-filter" title="Filter by category source, balance check and extraction path">
+              <option value="ai">AI suggestions</option>
+              <option value="" selected>All rows</option>
+              <option value="review">Needs review</option>
               <option value="text">Text rows</option>
               <option value="bad">Unbalanced rows</option>
               <option value="vision">Vision rows</option>
@@ -1362,6 +1399,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
           <div class="db-empty-body">Extract bank statements first — go to the Unvault tab.</div>
         </div>
         <div id="rv-alert"></div>
+        <div id="rv-ai-info"></div>
         <div id="rv-note" class="rv-note" role="status" aria-live="polite"></div>
         <div id="rv-table-wrap"></div>
       </div>
@@ -2727,6 +2765,41 @@ function migrateCategorySources(txns) {
       : t.category === TF.categorise(t.reference) || t.category === 'Bank Charges' ? 'rule' : 'confirmed';
   });
 }
+
+/* Centred confirm modal (CLAUDE.md: no bottom-anchored sheets).
+   Modal.confirm({title, body (trusted HTML), confirmText, cancelText}) → Promise<boolean>.
+   Escape or a click outside the box cancels. */
+const Modal = (() => {
+  function confirm({ title, body, confirmText = 'OK', cancelText = 'Cancel' }) {
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'tf-modal-overlay';
+      overlay.innerHTML = `
+        <div class="tf-modal" role="dialog" aria-modal="true" aria-labelledby="tf-modal-title">
+          <h3 id="tf-modal-title"></h3>
+          <div class="tf-modal-body">${body}</div>
+          <div class="tf-modal-actions">
+            <button class="btn btn-outline" data-modal="cancel"></button>
+            <button class="btn btn-primary" data-modal="ok"></button>
+          </div>
+        </div>`;
+      overlay.querySelector('#tf-modal-title').textContent = title;
+      overlay.querySelector('[data-modal="cancel"]').textContent = cancelText;
+      overlay.querySelector('[data-modal="ok"]').textContent = confirmText;
+      const done = (v) => { document.removeEventListener('keydown', onKey); overlay.remove(); resolve(v); };
+      const onKey = (e) => { if (e.key === 'Escape') done(false); };
+      overlay.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-modal]');
+        if (b) done(b.dataset.modal === 'ok');
+        else if (e.target === overlay) done(false);
+      });
+      document.addEventListener('keydown', onKey);
+      document.body.appendChild(overlay);
+      overlay.querySelector('[data-modal="ok"]').focus();
+    });
+  }
+  return { confirm };
+})();
 
 // ── Persistence ──
 const Store = (() => {
@@ -4982,7 +5055,7 @@ const Review = (() => {
   let _filtered    = [];
   let _sourceFilter = '';
   let _catFilter    = '';
-  let _checkFilter  = '';   // '' | 'bad' | 'text' | 'vision'
+  let _checkFilter  = '';   // '' | 'bad' | 'text' | 'vision' | 'ai' | 'review'
   let _flashId      = null; // row to scroll to and highlight after the next render
   let _sortCol     = 'post_date';
   let _sortAsc     = true;
@@ -5009,6 +5082,42 @@ const Review = (() => {
   function sort(col) {
     _sortCol === col ? (_sortAsc = !_sortAsc) : (_sortCol = col, _sortAsc = false);
     _render();
+  }
+
+  // ── Category source ───────────────────────────────────────────────────────────
+  const SOURCE_LABEL = { confirmed: '✓ Confirmed', rule: 'Rule', ai: 'AI suggestion', review: 'Needs review' };
+  const SOURCE_TITLE = {
+    confirmed: 'Confirmed by you (or by your earlier choice for this merchant)',
+    rule: 'Set by a keyword rule or by the statement itself (bank fee) — click to change',
+    ai: 'Suggested by AI from the merchant name only — not confirmed. Click to change, or accept it',
+    review: 'Not categorised yet — click to choose a category',
+  };
+  function _src(t) { return t.cat_source || (t.category === 'Uncategorised' ? 'review' : 'rule'); }
+  function _esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // Accepting an AI suggestion is a human confirmation: it is written to
+  // merchant memory as Confirmed (and so reaches the same merchant's rows).
+  function _accept(rows) {
+    const data = AppState.reviewData;
+    let accepted = 0;
+    rows.forEach(t => {
+      if (t.locked || _src(t) !== 'ai') return;
+      TF.confirmCategory(data, t, t.category, AppState.merchantMemory);
+      accepted++;
+    });
+    Store.save();
+    _selected.clear();
+    _refreshCatFilter();
+    _render();
+    _note(accepted ? `Accepted ${accepted} AI suggestion${accepted !== 1 ? 's' : ''} — saved as Confirmed for ${accepted !== 1 ? 'those merchants' : 'that merchant'}.` : 'No AI suggestions to accept.');
+  }
+  function acceptSelected() {
+    _accept(AppState.reviewData.filter(t => _selected.has(String(t.id))));
+  }
+  function acceptAll() {
+    _accept(AppState.reviewData.filter(t => _src(t) === 'ai'));
   }
 
   // ── Merge ─────────────────────────────────────────────────────────────────────
@@ -5128,8 +5237,21 @@ const Review = (() => {
       if (_checkFilter === 'bad' && t.check !== false) return false;
       if (_checkFilter === 'text' && t.path !== 'text') return false;
       if (_checkFilter === 'vision' && t.path !== 'vision') return false;
+      if (_checkFilter === 'ai' && _src(t) !== 'ai') return false;
+      if (_checkFilter === 'review' && _src(t) !== 'review') return false;
       return true;
     }));
+
+    // AI suggestions are never final: say how many there are and offer to accept them
+    const aiCount = AppState.reviewData.filter(t => !t.locked && _src(t) === 'ai').length;
+    const reviewCount = AppState.reviewData.filter(t => !t.locked && _src(t) === 'review').length;
+    const infoEl = document.getElementById('rv-ai-info');
+    if (infoEl) infoEl.innerHTML = aiCount || reviewCount ? `
+      <div class="rv-info">
+        <span>${aiCount ? `<strong>${aiCount}</strong> row${aiCount !== 1 ? 's have' : ' has'} an AI suggestion (dashed, marked “AI suggestion”) — check, then accept or change.` : ''}
+          ${reviewCount ? ` <strong>${reviewCount}</strong> row${reviewCount !== 1 ? 's need' : ' needs'} review.` : ''}</span>
+        ${aiCount ? '<button class="btn btn-outline btn-sm" data-rv-accept-all="1">Accept all AI suggestions</button>' : ''}
+      </div>` : '';
 
     // Unmissable banner whenever any row doesn't balance.
     const badCount = AppState.reviewData.filter(t => t.check === false).length;
@@ -5164,6 +5286,7 @@ const Review = (() => {
       <div class="rv-bulk-bar">
         <span><strong>${_selected.size}</strong> selected</span>
         <div class="rv-bulk-bar-spacer"></div>
+        <button class="btn btn-outline btn-sm" id="rv-accept-selected-btn" ${[..._selected].some(id => { const t = AppState.reviewData.find(x => String(x.id) === id); return t && _src(t) === 'ai'; }) ? '' : 'disabled title="None of the selected rows has an AI suggestion"'}>Accept selected suggestions</button>
         <button class="btn btn-primary btn-sm" id="rv-bulk-categorize-btn">Categorise Selected →</button>
         <button class="btn btn-ghost btn-sm" id="rv-bulk-clear-btn">Clear</button>
       </div>` : '';
@@ -5185,16 +5308,19 @@ const Review = (() => {
               : bad ? `<td class="rv-td-check bad" title="Statement balance ${t.balance != null ? fmtZAR(t.balance) : '—'}; expected ${t.expected != null ? fmtZAR(t.expected) : '—'}">✗ Doesn't balance</td>`
               : '<td class="rv-td-check na">— Not checked</td>';
             const pathCell = `<td class="rv-td-path">${t.path === 'vision' ? 'AI vision' : t.path === 'text' ? 'Text' : '—'}</td>`;
-            return `<tr data-txnid="${txnId}" class="${locked ? '' : 'rv-row-selectable'} ${selected ? 'rv-row-selected' : ''} ${bad ? 'rv-row-bad' : ''}">
+            const cs = _src(t);
+            return `<tr data-txnid="${_esc(txnId)}" class="${locked ? '' : 'rv-row-selectable'} ${selected ? 'rv-row-selected' : ''} ${bad ? 'rv-row-bad' : ''}">
               <td class="rv-td-date">${fmtDate(t.post_date)}</td>
-              <td class="rv-td-ref" title="${t.reference}">${t.reference}</td>
-              <td class="rv-td-source">${src}</td>
+              <td class="rv-td-ref" title="${_esc(t.reference)}">${_esc(t.reference)}</td>
+              <td class="rv-td-source">${_esc(src)}</td>
               <td>
-                <span class="rv-cat-badge ${locked ? 'locked' : ''}"
-                      style="border-left:3px solid ${catColour(t.category)}"
-                      data-txnid="${txnId}">
-                  ${t.category}
+                <span class="rv-cat-badge ${locked ? 'locked' : 'src-' + cs}" data-txnid="${_esc(txnId)}"
+                      title="${locked ? '' : _esc(SOURCE_TITLE[cs])}">
+                  <span class="rv-cat-dot" style="background:${catColour(t.category)}"></span>
+                  <span class="rv-cat-name">${_esc(t.category)}</span>
+                  ${locked ? '' : `<span class="rv-src rv-src-${cs}">${SOURCE_LABEL[cs]}</span>`}
                 </span>
+                ${t.ai_hint && cs === 'review' ? `<span class="rv-ai-hint">AI hint (low confidence): ${_esc(t.ai_hint)}?</span>` : ''}
               </td>
               <td class="rv-td-amount ${t.amount < 0 ? 'neg' : 'pos'}">${fmtZAR(t.amount)}</td>
               ${checkCell}${pathCell}
@@ -5309,8 +5435,22 @@ const Review = (() => {
 
   // ── Commit ────────────────────────────────────────────────────────────────────
 
-  function commit() {
+  // Commit is never blocked, but unconfirmed categories are counted first.
+  async function commit() {
     if (!AppState.reviewData.length) { alert('Nothing to commit — load some data first.'); return; }
+    const aiLeft = AppState.reviewData.filter(t => !t.locked && _src(t) === 'ai').length;
+    const reviewLeft = AppState.reviewData.filter(t => !t.locked && _src(t) === 'review').length;
+    if (aiLeft || reviewLeft) {
+      const ok = await Modal.confirm({
+        title: 'Some categories are not confirmed yet',
+        body: `<p>Committing now puts these rows on the Dashboard as they are:</p><ul>` +
+          (aiLeft ? `<li><strong>${aiLeft}</strong> AI suggestion${aiLeft !== 1 ? 's' : ''} not yet accepted</li>` : '') +
+          (reviewLeft ? `<li><strong>${reviewLeft}</strong> row${reviewLeft !== 1 ? 's' : ''} still needing review (Uncategorised)</li>` : '') +
+          `</ul><p style="margin-top:10px">You can come back to Review and fix them later.</p>`,
+        confirmText: 'Commit anyway', cancelText: 'Keep reviewing',
+      });
+      if (!ok) return;
+    }
     const txns    = [...AppState.reviewData].sort((a,b) => a.post_date.localeCompare(b.post_date));
     const sources = [...new Set(txns.map(t => t.source_file || t.source || 'Unknown'))];
     AppState.committedData = {
@@ -5355,7 +5495,7 @@ const Review = (() => {
   }
 
   return { render, filter, removeSource, openPicker, sort, selectRow, clearSelection,
-           categorizeSelected, mergeFromExtractor, commit,
+           categorizeSelected, mergeFromExtractor, commit, acceptSelected, acceptAll,
            exportForCategorise, importCategorised, focusRow, showBad };
 })();
 
@@ -5422,6 +5562,7 @@ function _bindEvents() {
     if (e.target.closest('[data-rv-show-all]')) { const ck = byId('rv-check-filter'); ck.value = ''; Review.filter(); }
   });
   on('rv-remove-source-btn', 'click', () => Review.removeSource());
+  on('rv-ai-info', 'click', (e) => { if (e.target.closest('[data-rv-accept-all]')) Review.acceptAll(); });
   on('rv-export-btn', 'click', () => Review.exportForCategorise());
   on('rv-import-btn', 'click', () => byId('rv-import-input').click());
   on('rv-import-input', 'change', function () { Review.importCategorised(this); });
@@ -5438,6 +5579,9 @@ function _bindEvents() {
 
     const bulkClearBtn = e.target.closest('#rv-bulk-clear-btn');
     if (bulkClearBtn) { Review.clearSelection(); return; }
+
+    const acceptSelBtn = e.target.closest('#rv-accept-selected-btn');
+    if (acceptSelBtn) { if (!acceptSelBtn.disabled) Review.acceptSelected(); return; }
 
     const row = e.target.closest('tr[data-txnid]');
     if (row && row.classList.contains('rv-row-selectable')) { Review.selectRow(row.dataset.txnid, e); return; }
