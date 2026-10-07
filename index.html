@@ -1196,6 +1196,9 @@ body {
 .rv-cat-badge.src-review { border:2px solid var(--warning); background:#FFFBEB; }
 .rv-src-review { background:#92400E; color:#fff; }
 .rv-ai-hint { display:block; margin-top:3px; font-size:13px; color:#3730A3; }
+.rv-offer, .rv-corrected { display:block; margin-top:4px; font-family:var(--font); font-size:13px; font-weight:400; color:var(--text-1); white-space:normal; text-align:right; }
+.rv-offer .btn { margin-top:4px; }
+.rv-corrected { color:#3730A3; font-weight:600; }
 .rv-info {
   display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;
   padding:10px 16px; margin-bottom:12px; border-radius:var(--radius);
@@ -2193,6 +2196,62 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     return results;
   }
 
+  /* ---------- one-click balance correction ----------
+     For a row that fails the balance check, the bank's own printed balances
+     imply its amount: this row's printed balance − the previous printed
+     balance (the opening balance for the first row) − the row's fee (fee
+     convention applied). Offered only when the error is isolated: the
+     previous row balances (or this is the first row and the opening balance
+     is known) AND the next row balances against this row's printed balance.
+     If the printed balance itself is wrong, the next row fails too, so
+     nothing is offered. Never applied automatically. Sets row.offer. */
+  function balanceOffers(opening, rows) {
+    rows.forEach((r, i) => {
+      r.offer = null;
+      if (r.ok !== false || r.balance === null || r.balance === undefined) return;
+      const prevBal = i === 0 ? opening : rows[i - 1].balance;
+      const prevOk = i === 0 ? opening !== null && opening !== undefined : rows[i - 1].ok === true;
+      const next = rows[i + 1];
+      if (!prevOk || prevBal === null || prevBal === undefined || !next || next.ok !== true) return;
+      const implied = round2(r.balance - prevBal - (r.fee || 0));
+      if (implied !== round2(r.amount)) r.offer = implied;
+    });
+    return rows;
+  }
+
+  /* The final checks of a statement — run at extraction and again after a
+     correction, so both give exactly the same answer.
+     unreadLines: problem lines for pages that could not be read. */
+  function statementChecks(opening, rows, closingPrinted, totals, fees, unreadLines) {
+    const rowSummary = checkRows(opening, rows);
+    const whole = wholeStatement(opening, rows, closingPrinted, totals);
+    balanceOffers(opening, rows);
+    const problems = [...(unreadLines || [])];
+    if (rowSummary.failed) problems.push(`${rowSummary.failed} row(s) don't balance against the printed running balance`);
+    if (fees && fees.convention === null) problems.push(`No single fee convention (fees charged separately, or not deducted on the row) balances every row — rows are checked as "${fees.applied}", the closest fit`);
+    if (opening === null || opening === undefined) problems.push('Opening balance not found, so the first row cannot be verified');
+    if (whole.computed !== null && !whole.balanceOk) problems.push(`Opening + credits − debits = ${whole.computed.toFixed(2)}, but the closing balance is ${whole.closing === null ? 'missing' : whole.closing.toFixed(2)}`);
+    whole.printed.filter(p => !p.ok).forEach(p => problems.push(`Printed total ${p.name} ${p.printed.toFixed(2)} ≠ extracted ${Math.abs(p.extracted).toFixed(2)}`));
+    const status = !rows.length ? 'empty'
+      : (unreadLines || []).length || rowSummary.failed > 0 || (whole.computed !== null && !whole.ok) ? 'unbalanced'
+      : rowSummary.unchecked > 0 || whole.computed === null ? 'unverified' : 'reconciled';
+    return { rowSummary, whole, problems, status };
+  }
+
+  /* Compact copy of a statement's rows (numbers only, no text) kept with the
+     saved file summary, so a correction can re-run every check after a reload. */
+  function liteRows(rows) {
+    return rows.map(r => Object.assign({ a: r.amount, f: r.fee || 0, s: r.star || 0, b: r.balance, o: r.offer === undefined ? null : r.offer },
+      r.feeCol !== undefined ? { fc: r.feeCol } : null, r.corrected ? { c: r.corrected } : null));
+  }
+  function recheckLite(opening, lite, closingPrinted, totals, unreadLines) {
+    const rows = lite.map(x => Object.assign({ amount: x.a, fee: x.f, star: x.s, balance: x.b },
+      x.fc !== undefined ? { feeCol: x.fc } : null, x.c ? { corrected: x.c } : null));
+    const fees = chooseFeeConvention(opening, rows);
+    const res = statementChecks(opening, rows, closingPrinted, totals, fees, unreadLines);
+    return Object.assign({ rows, fees, lite: liteRows(rows) }, res);
+  }
+
   function monthIndex(iso) { return iso ? (+iso.slice(0, 4)) * 12 + (+iso.slice(5, 7)) - 1 : null; }
 
   /* Continuity across a batch: for each account (bank + account key), in date
@@ -2620,24 +2679,13 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     await visionRound(new Set(rows.filter(r => r.ok === false).map(r => r.page)), "rows don't balance");
     fees = chooseFeeConvention(opening, rows);
 
-    const rowSummary = checkRows(opening, rows);
-    const whole = wholeStatement(opening, rows, parsed.closingPrinted, parsed.totals);
+    const unread = pageInfo.filter(p => p.visionError && !rows.some(r => r.page === p.page) &&
+      (p.chars === 0 || p.readable < 0.9 || p.textRows > 0));
+    const { rowSummary, whole, problems, status } = statementChecks(opening, rows, parsed.closingPrinted, parsed.totals, fees,
+      unread.map(p => `Page ${p.page} could not be read (${p.visionError})`));
     const isos = rows.map(r => r.iso).filter(Boolean).sort();
     try { await doc.loadingTask.destroy(); } catch (e) { /* ignore */ }   // PDFDocumentProxy.destroy() is gone in newer pdf.js
     const ms = Date.now() - t0;
-    // Plain-English reasons a file needs attention (shown on screen).
-    const problems = [];
-    const unread = pageInfo.filter(p => p.visionError && !rows.some(r => r.page === p.page) &&
-      (p.chars === 0 || p.readable < 0.9 || p.textRows > 0));
-    unread.forEach(p => problems.push(`Page ${p.page} could not be read (${p.visionError})`));
-    if (rowSummary.failed) problems.push(`${rowSummary.failed} row(s) don't balance against the printed running balance`);
-    if (fees.convention === null) problems.push(`No single fee convention (fees charged separately, or not deducted on the row) balances every row — rows are checked as "${fees.applied}", the closest fit`);
-    if (opening === null) problems.push('Opening balance not found, so the first row cannot be verified');
-    if (whole.computed !== null && !whole.balanceOk) problems.push(`Opening + credits − debits = ${whole.computed.toFixed(2)}, but the closing balance is ${whole.closing === null ? 'missing' : whole.closing.toFixed(2)}`);
-    whole.printed.filter(p => !p.ok).forEach(p => problems.push(`Printed total ${p.name} ${p.printed.toFixed(2)} ≠ extracted ${Math.abs(p.extracted).toFixed(2)}`));
-    const status = !rows.length ? 'empty'
-      : unread.length || rowSummary.failed > 0 || (whole.computed !== null && !whole.ok) ? 'unbalanced'
-      : rowSummary.unchecked > 0 || whole.computed === null ? 'unverified' : 'reconciled';
     return {
       name: file.name, bank: parsed.bank, accountKey: parsed.accountKey, fontModes,
       period: isos.length ? { from: isos[0], to: isos[isos.length - 1] } : null,
@@ -2646,6 +2694,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
       counts: { text: rows.filter(r => r.path === 'text').length, vision: rows.filter(r => r.path === 'vision').length },
       skippedDated: parsed.skippedDated.length, orphanMoneyLines: parsed.orphanMoneyLines,
       ms, readMs, status, problems, unreadPages: unread.map(p => p.page),
+      closingPrinted: parsed.closingPrinted, totals: parsed.totals,
     };
   }
 
@@ -2702,6 +2751,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
         post_date: row.iso, trans_date: row.trans_iso || row.iso, balance: row.balance,
         source_file: r.name, path: row.path, check: row.ok, expected: row.expected, page: row.page, row: k,
       };
+      const first = out.length;
       const txn = (amount, reference, category, extra) => Object.assign({}, base, {
         txn_type: amount >= 0 ? 'Credit' : 'Debit', reference, amount: round2(amount), fees: 0, category,
       }, extra || {});
@@ -2715,6 +2765,8 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
         const alone = rest === 0 && !star;
         out.push(txn(row.fee, alone ? row.reference : 'Bank fee: ' + row.reference, 'Bank Charges', Object.assign({ bank_fee: true }, alone ? null : { kind: 'fee' })));
       }
+      // the row's first transaction carries the row: balance-implied correction offer, corrections
+      if (out[first]) Object.assign(out[first], { main: true, offer: row.offer === undefined ? null : row.offer });
     });
     return out;
   }
@@ -2731,7 +2783,8 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     fingerprint, markDuplicates, rowsToTxns, bankCharges, categorise,
     merchantKey, MERCHANT_PREFIXES, MERCHANT_SUFFIXES, PLACE_SUFFIXES,
     applyCategories, confirmCategory, isPrivate, PRIVATE_WORDING,
-    aiCandidates, applyAiSuggestions, suggestCategories, AI_MAX_KEYS, validCategory, CATEGORIES, CATEGORY_RULES,
+    aiCandidates, applyAiSuggestions, suggestCategories, AI_MAX_KEYS,
+    balanceOffers, statementChecks, liteRows, recheckLite, validCategory, CATEGORIES, CATEGORY_RULES,
     visionToRows, processFile, runBatch, isoDate,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : window);
@@ -3435,12 +3488,63 @@ const Extractor = (() => {
       feeConvention: r.feeConvention === undefined ? 'unknown' : r.feeConvention, feeApplied: r.feeApplied || null,
       fingerprint: r.fingerprint || null, duplicateOf: r.duplicateOf || null,
       unreadPages: r.unreadPages || [],
-      badRows: (r.rows || []).filter(x => x.ok === false).map(x => ({
-        id: x.txnId, page: x.page, date: x.iso, reference: x.reference, amount: x.amount + (x.fee || 0),
-        balance: x.balance, expected: x.expected, path: x.path,
-      })),
+      badRows: _badRows(r.rows || []),
       msPerPage: r.pages ? Math.round(r.ms / r.pages) : null,
+      // numbers only, so a balance-implied correction can re-run every check later
+      rowsLite: r.rows ? TF.liteRows(r.rows) : [],
+      closingPrinted: r.closingPrinted ?? null, totals: r.totals || {},
+      rowRefs: (r.rows || []).map(x => ({ id: x.txnId, page: x.page, date: x.iso, reference: x.reference, path: x.path })),
     };
+  }
+  function _badRows(rows, refs) {
+    return rows.map((x, k) => ({ x, k })).filter(({ x }) => x.ok === false).map(({ x, k }) => {
+      const ref = (refs && refs[k]) || x;
+      return { id: ref.id || x.txnId, page: ref.page, date: ref.date || x.iso, reference: ref.reference, row: k,
+        amount: round2z(x.amount + (x.fee || 0)), balance: x.balance, expected: x.expected, path: ref.path,
+        offer: x.offer === undefined || x.offer === null ? null : x.offer };
+    });
+  }
+  function round2z(n) { return Math.round(n * 100) / 100; }
+
+  /* Accept a balance-implied correction for row k of statement `name`:
+     update the amount, mark it "Corrected by user (balance-implied)", and
+     re-run every check of that statement (rows, whole statement, printed
+     totals, fee convention). Never applied without this click. */
+  function acceptCorrection(name, k) {
+    const sum = (AppState.reconResults || []).find(r => r.name === name);
+    const lite = sum && sum.rowsLite && sum.rowsLite[k];
+    if (!lite || lite.o === null || lite.o === undefined) return false;
+    const before = lite.a, after = lite.o;
+    lite.a = after;
+    if (lite.s && lite.s === before) lite.s = after;
+    lite.c = { from: before, to: after, how: 'balance-implied' };
+    const unreadLines = (sum.problems || []).filter(p => /^Page \d+ could not be read/.test(p));
+    const re = TF.recheckLite(sum.opening, sum.rowsLite, sum.closingPrinted, sum.totals, unreadLines);
+    Object.assign(sum, {
+      rowsLite: re.lite, rowSummary: re.rowSummary, printed: re.whole.printed, problems: re.problems,
+      status: re.status, closing: re.whole.closing, feeConvention: re.fees.convention, feeApplied: re.fees.applied,
+      badRows: _badRows(re.rows, sum.rowRefs),
+    });
+    // the statement's transactions in Review (and on the Dashboard, which shares them)
+    const txns = AppState.reviewData.filter(t => t.source_file === name && t.row !== undefined);
+    txns.forEach(t => {
+      const row = re.rows[t.row];
+      if (!row) return;
+      t.check = row.ok; t.expected = row.expected;
+      t.offer = t.main ? (row.offer ?? null) : null;
+    });
+    const main = txns.find(t => t.row === k && t.main);
+    if (main) {
+      const fromAmt = main.amount;
+      const toAmt = round2z(main.bank_fee ? after : after - (lite.s || 0));
+      main.amount = toAmt; main.txn_type = toAmt >= 0 ? 'Credit' : 'Debit';
+      main.corrected = { from: fromAmt, to: toAmt, how: 'balance-implied' };
+    }
+    const f = AppState.unlockedFiles.find(x => x.name === name);
+    if (f && f.result) Object.assign(f.result, { status: re.status, rowSummary: re.rowSummary });
+    Store.save();
+    sync();
+    return true;
   }
 
   function _money(n) { return n === null || n === undefined ? '—' : fmtZAR(n); }
@@ -3519,12 +3623,16 @@ const Extractor = (() => {
     const badTable = shown.length ? `
       <table class="rc-rows">
         <thead><tr><th>Page</th><th>Date</th><th>Reference</th><th style="text-align:right">Amount</th>
-          <th style="text-align:right">Statement balance</th><th style="text-align:right">Expected</th><th>Path</th><th></th></tr></thead>
+          <th style="text-align:right">Statement balance</th><th style="text-align:right">Expected</th><th>Path</th><th>Bank's balances say</th><th></th></tr></thead>
         <tbody>${shown.map(b => `
           <tr><td>${b.page}</td><td>${b.date ? fmtDate(b.date) : '—'}</td>
             <td class="ref" title="${_esc(b.reference)}">${_esc(b.reference)}</td>
             <td class="num">${_money(b.amount)}</td><td class="num">${_money(b.balance)}</td><td class="num">${_money(b.expected)}</td>
             <td>${b.path === 'vision' ? 'Vision' : 'Text'}</td>
+            <td>${b.offer !== null && b.offer !== undefined
+              ? `The bank's balances say this should be <strong>${_money(b.offer)}</strong> — accept?
+                 <button class="rc-btn ok" data-rc-accept="${_esc(r.name)}" data-rc-row="${b.row}">Accept ${_money(b.offer)}</button>`
+              : '—'}</td>
             <td>${b.id ? `<button class="rc-btn" data-rc-jump="${_esc(b.id)}">Show row</button>` : ''}</td></tr>`).join('')}
         </tbody>
       </table>
@@ -3559,7 +3667,7 @@ const Extractor = (() => {
     App.goto('reconcile');
   }
 
-  return { sync, run, openDashboard, reextract, renderRecon: _renderRecon };
+  return { sync, run, openDashboard, reextract, renderRecon: _renderRecon, acceptCorrection };
 })();
 
 /* ============================================================
@@ -4457,9 +4565,11 @@ Dashboard.Ledger = (() => {
     // Quote every text field and double any quotes inside it (RFC 4180).
     const q = v => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
     const n = v => (v === null || v === undefined || v === '') ? '' : v;
-    const csv=['Date,Transaction date,Type,Reference,Category,Amount,Fees,Balance,Source',
+    const SRC = { confirmed: 'Confirmed', rule: 'Rule', ai: 'AI suggestion', review: 'Needs review' };
+    const csv=['Date,Transaction date,Type,Reference,Category,Category source,Amount,Fees,Balance,Source,Correction',
       ...txns.map(t=>[t.post_date, n(t.trans_date), q(t.txn_type || ''), q(t.reference), q(t.category),
-                      t.amount, n(t.fees), n(t.balance), q(t.source_file || '')].join(','))
+                      q(SRC[t.cat_source] || ''), t.amount, n(t.fees), n(t.balance), q(t.source_file || ''),
+                      q(t.corrected ? `Corrected by user (balance-implied): was ${t.corrected.from.toFixed(2)}` : '')].join(','))
     ].join('\n');
     const a=document.createElement('a');
     a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
@@ -5119,6 +5229,12 @@ const Review = (() => {
   function acceptAll() {
     _accept(AppState.reviewData.filter(t => _src(t) === 'ai'));
   }
+  function acceptOffer(id) {
+    const t = AppState.reviewData.find(x => String(x.id) === String(id));
+    if (!t || !Extractor.acceptCorrection(t.source_file, t.row)) { _note('That correction is no longer available — re-extract the statement to check it again.'); return; }
+    _render();
+    _note(`Amount corrected to ${fmtZAR(t.amount)} from the bank's own balances; the statement's checks were re-run.`);
+  }
 
   // ── Merge ─────────────────────────────────────────────────────────────────────
 
@@ -5322,7 +5438,11 @@ const Review = (() => {
                 </span>
                 ${t.ai_hint && cs === 'review' ? `<span class="rv-ai-hint">AI hint (low confidence): ${_esc(t.ai_hint)}?</span>` : ''}
               </td>
-              <td class="rv-td-amount ${t.amount < 0 ? 'neg' : 'pos'}">${fmtZAR(t.amount)}</td>
+              <td class="rv-td-amount ${t.amount < 0 ? 'neg' : 'pos'}">${fmtZAR(t.amount)}
+                ${t.corrected ? `<span class="rv-corrected">Corrected by user (balance-implied): was ${fmtZAR(t.corrected.from)}</span>` : ''}
+                ${t.main && bad && t.offer !== null && t.offer !== undefined ? `<span class="rv-offer">The bank's balances say this should be ${fmtZAR(t.offer)} — accept?
+                  <button class="btn btn-outline btn-sm" data-rv-accept-offer="${_esc(txnId)}">Accept ${fmtZAR(t.offer)}</button></span>` : ''}
+              </td>
               ${checkCell}${pathCell}
             </tr>`;
           }).join('')}
@@ -5495,7 +5615,7 @@ const Review = (() => {
   }
 
   return { render, filter, removeSource, openPicker, sort, selectRow, clearSelection,
-           categorizeSelected, mergeFromExtractor, commit, acceptSelected, acceptAll,
+           categorizeSelected, mergeFromExtractor, commit, acceptSelected, acceptAll, acceptOffer,
            exportForCategorise, importCategorised, focusRow, showBad };
 })();
 
@@ -5580,6 +5700,9 @@ function _bindEvents() {
     const bulkClearBtn = e.target.closest('#rv-bulk-clear-btn');
     if (bulkClearBtn) { Review.clearSelection(); return; }
 
+    const offerBtn = e.target.closest('[data-rv-accept-offer]');
+    if (offerBtn) { Review.acceptOffer(offerBtn.dataset.rvAcceptOffer); return; }
+
     const acceptSelBtn = e.target.closest('#rv-accept-selected-btn');
     if (acceptSelBtn) { if (!acceptSelBtn.disabled) Review.acceptSelected(); return; }
 
@@ -5593,6 +5716,8 @@ function _bindEvents() {
   on('ex-recon', 'click', (e) => {
     const jump = e.target.closest('[data-rc-jump]');
     if (jump) { Review.focusRow(jump.dataset.rcJump); return; }
+    const acc = e.target.closest('[data-rc-accept]');
+    if (acc) { Extractor.acceptCorrection(acc.dataset.rcAccept, Number(acc.dataset.rcRow)); Review.render(); return; }
     if (e.target.closest('[data-rc-show-bad]')) Review.showBad();
   });
   on('ex-file-list', 'click', (e) => {

@@ -215,6 +215,7 @@ function loadFiles(dir) {
 
   // ---- 2. sabotage: the checks must be able to fail ----
   console.log('\n== 2. Sabotage tests (in memory) ==');
+  let offeredOk = 0;
   const clone = rows => rows.map(r => Object.assign({}, r));
   for (const r of ok) {
     const mid = Math.floor(r.rows.length / 2);
@@ -235,9 +236,17 @@ function loadFiles(dir) {
       ` | C last row deleted: whole ${wc.balanceOk ? 'pass' : 'FAIL'}, continuity vs next statement ${follower.continuity.status}` +
       ` → ${cCaught ? 'caught' : 'MISSED'} (${r.closingSource === 'printed' ? 'printed closing balance' : 'continuity only'})`);
     if (sa.failed !== 1 || wa.balanceOk) fail(`${label(r)} sabotage A not caught`);
+    // the one-click correction must offer exactly the amount the bank's balances imply (the original)
+    TF.balanceOffers(r.opening, a);
+    const offers = a.filter(x => x.offer !== null);
+    if (offers.length !== 1 || offers[0] !== a[mid] || offers[0].offer !== Math.round(r.rows[mid].amount * 100) / 100)
+      fail(`${label(r)} sabotage A: correction offer ${offers.map(x => x.offer).join(',') || 'none'}, expected ${r.rows[mid].amount}`);
+    else offeredOk++;
     if (sb.failed !== 1 || wb.balanceOk) fail(`${label(r)} sabotage B not caught`);
     if (!cCaught) fail(`${label(r)} sabotage C not caught`);
   }
+
+  console.log(`sabotage A: one-click correction offered exactly the original amount on ${offeredOk}/${ok.length} statement(s)`);
 
   // ---- 2b. fee convention: chosen for the whole statement, never row by row ----
   console.log('\n== 2b. Fee convention sabotage (in memory) ==');
