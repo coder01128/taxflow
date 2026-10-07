@@ -2226,6 +2226,82 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     return CATEGORIES.includes(cat) || (custom || []).includes(cat) ? cat : 'Uncategorised';
   }
 
+  /* ---------- merchant key: a stable name for "who was paid" ----------
+     Turns a raw statement reference into the merchant words only, so the
+     same merchant gets the same key on every statement:
+       uppercase → drop masked card numbers, authorisation codes, URLs,
+       dates and times, card-processor prefixes ("C*", "FLW*") → punctuation
+       to spaces → drop number-like tokens (account/reference numbers,
+       long digit runs, mixed letter+digit codes) → strip generic banking
+       words at the start and legal/place words at the end.
+     Generic only: nothing here depends on which bank printed the line.
+     It never merges by similarity — two keys are equal only when the
+     remaining merchant words are identical. Returns null when nothing is
+     left (e.g. an empty reference). */
+  const MERCHANT_PREFIXES = [   // generic banking wording before the merchant (longest first)
+    'POS INTERNATIONAL PURCHASE', 'POS LOCAL PURCHASE', 'POS PURCHASE', 'INTERNATIONAL PURCHASE',
+    'LOCAL PURCHASE', 'ONLINE PURCHASE', 'CONTACTLESS PURCHASE', 'CARD PURCHASE', 'FUEL PURCHASE',
+    'CARD PAYMENT', 'RECURRING PAYMENT', 'DEBIT ORDER', 'INWARD EFT CREDIT', 'INWARD EFT',
+    'OUTWARD EFT', 'EFT CREDIT', 'EFT DEBIT', 'ACB CREDIT', 'ACB DEBIT', 'MAGTAPE CREDIT',
+    'MAGTAPE DEBIT', 'DEPOSIT TRANSFER', 'PURCHASE', 'POS', 'ATM', 'EFT',
+  ];
+  const MERCHANT_SUFFIXES = [   // legal forms and leftovers after the merchant
+    'PTY LTD', 'PTY', 'LTD', 'PT', 'LLC', 'INC', 'AUTH', 'AUTHID',
+  ];
+  const PLACE_SUFFIXES = [      // country, province and metro names a card terminal appends
+    'SOUTH AFRICA', 'SOUT', 'ZAF', 'ZA', 'RSA', 'GAUTENG', 'WESTERN CAPE', 'EASTERN CAPE',
+    'NORTHERN CAPE', 'KWAZULU NATAL', 'KZN', 'FREE STATE', 'LIMPOPO', 'MPUMALANGA', 'NORTH WEST',
+    'JOHANNESBURG', 'JOHANNESBU', 'JOHANNESB', 'JHB', 'JNB', 'CAPE TOWN', 'CPT', 'PRETORIA', 'PTA',
+    'DURBAN', 'DBN', 'SANDTON', 'RANDBURG', 'CENTURION', 'MIDRAND', 'ROODEPOORT', 'BOKSBURG',
+    'SOWETO', 'GQEBERHA', 'PORT ELIZABETH', 'BLOEMFONTEIN', 'EAST LONDON', 'STELLENBOSCH',
+  ];
+  const MONTH_WORDS = 'JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|SEPT|OCT|NOV|DEC';
+  // a trailing place word is kept if removing it would leave a dangling "CITY OF", "THE", …
+  const CONNECTORS = new Set(['OF', 'THE', 'AND', '&', 'DE', 'VAN', 'AT', 'ON', 'IN']);
+
+  // what may not be left on its own after stripping a prefix ("DEBIT ORDER FEE" stays whole)
+  const TOO_GENERIC = new Set(['FEE', 'FEES', 'CHARGE', 'CHARGES', 'REFUND', 'REVERSAL', 'CREDIT', 'DEBIT', 'PAYMENT']);
+  function dropPhrase(tokens, phrases, atStart) {
+    for (const ph of phrases) {
+      const w = ph.split(' ');
+      if (w.length >= tokens.length) continue;   // never strip the whole key
+      if (atStart && tokens.length - w.length === 1 && TOO_GENERIC.has(tokens[tokens.length - 1])) continue;
+      const part = atStart ? tokens.slice(0, w.length) : tokens.slice(-w.length);
+      if (part.join(' ') === ph) return atStart ? tokens.slice(w.length) : tokens.slice(0, -w.length);
+    }
+    return null;
+  }
+
+  function merchantKey(reference) {
+    let s = ' ' + String(reference || '').toUpperCase() + ' ';
+    s = s.replace(/\d{4,}[X*]{4,10}\d{3,4}/g, ' ');                 // masked card numbers, often glued to the name
+    s = s.replace(/AUTH\s?I\s?D\b[\s\d]*/g, ' ');                     // "AUTH ID 123456", glued "…TOWNAUTH ID"
+    s = s.replace(/HTTPS?:\/\/|WWW\./g, ' ');                        // URLs …
+    s = s.replace(/\.(?:CO\.ZA|COM|CO|NET|ORG|IO)\b(?:\/\S*)?/g, ' '); // … and their domain endings and paths
+    s = s.replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ');                    // dates
+    s = s.replace(/\b\d{1,2}[/.-]\d{1,2}(?:[/.-]\d{2,4})?\b/g, ' ');
+    s = s.replace(new RegExp('\\b\\d{1,2}\\s?(?:' + MONTH_WORDS + ')[A-Z]*(?:\\s?\\d{2,4})?\\b', 'g'), ' ');
+    s = s.replace(new RegExp('\\b(?:' + MONTH_WORDS + ')[A-Z]*\\s?\\d{2,4}\\b', 'g'), ' ');   // "DEC 23", "June 2024"
+    s = s.replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, ' ');            // times
+    s = s.replace(/([A-Z]{5,})(\d{3,})/g, '$1 $2');                  // a name glued to a number: "ACMECOLLE0123…"
+    s = s.replace(/^\s*[A-Z0-9]{1,8}\s?\*\s?(?=[A-Z]{2})/, ' ');    // card-processor prefix: "C*", "FLW*", "PAYPAL *"
+    s = s.replace(/[^A-Z0-9&' ]+/g, ' ');                           // punctuation → space
+    let tokens = s.split(/\s+/).filter(Boolean).filter(t =>
+      /^\d{1,3}(?:ST|ND|RD|TH)$/.test(t) ||                          // keep ordinals ("9TH")
+      !((t.match(/\d/g) || []).length >= 2 || (/\d/.test(t) && t.length >= 5)));   // drop numbers and codes
+    for (let changed = true; changed;) {
+      changed = false;
+      const pre = dropPhrase(tokens, MERCHANT_PREFIXES, true);
+      if (pre) { tokens = pre; changed = true; continue; }
+      const suf = dropPhrase(tokens, MERCHANT_SUFFIXES, false);
+      if (suf) { tokens = suf; changed = true; continue; }
+      const place = dropPhrase(tokens, PLACE_SUFFIXES, false);
+      if (place && !CONNECTORS.has(place[place.length - 1])) { tokens = place; changed = true; }
+    }
+    const key = tokens.join(' ').slice(0, 120).trim();
+    return key || null;
+  }
+
   /* ---------- vision rows → parser rows ---------- */
   function num(v) {
     if (v === null || v === undefined || v === '') return null;
@@ -2470,7 +2546,8 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
   root.TF = {
     readPage, chooseDecoding, readableRatio, pageRuns, groupLines, parsePages,
     checkRows, chooseFeeConvention, applyFeeConvention, FEE_CONVENTIONS, wholeStatement, continuity,
-    fingerprint, markDuplicates, rowsToTxns, bankCharges, categorise, validCategory, CATEGORIES, CATEGORY_RULES,
+    fingerprint, markDuplicates, rowsToTxns, bankCharges, categorise,
+    merchantKey, MERCHANT_PREFIXES, MERCHANT_SUFFIXES, PLACE_SUFFIXES, validCategory, CATEGORIES, CATEGORY_RULES,
     visionToRows, processFile, runBatch, isoDate,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : window);
