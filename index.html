@@ -1146,6 +1146,11 @@ body {
   background:var(--expense-bg); border:2px solid var(--expense); color:#991B1B;
   font-size:14px; font-weight:700;
 }
+.rv-note:empty { display:none; }
+.rv-note {
+  padding:8px 14px; margin-bottom:10px; border-radius:var(--radius-sm);
+  background:var(--accent-light); border:1px solid var(--accent); color:var(--text-1); font-size:13px;
+}
 .rv-td-amount.neg { color:var(--expense); }
 .rv-td-amount.pos { color:var(--income); }
 .rv-cat-badge {
@@ -1357,6 +1362,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
           <div class="db-empty-body">Extract bank statements first — go to the Unvault tab.</div>
         </div>
         <div id="rv-alert"></div>
+        <div id="rv-note" class="rv-note" role="status" aria-live="polite"></div>
         <div id="rv-table-wrap"></div>
       </div>
     </div>
@@ -2302,6 +2308,83 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     return key || null;
   }
 
+  /* ---------- transfers and payments to people: never sent to AI ----------
+     A row is private when its reference uses transfer / payment-to-person
+     wording, or its merchant key looks like a person's name (a title, or
+     initials followed by a surname). Private rows still get rules and a
+     human's confirmed memory, but never an AI suggestion. A bank fee for a
+     transfer ("INSTANT PAYMENT FEE") is not private. */
+  const PRIVATE_WORDING = [
+    'TRANSFER', 'PAYMENT TO', 'PAYMENT FROM', 'IMMEDIATE PAYMENT', 'INSTANT PAYMENT', 'IB PAYMENT',
+    'IB TRANSFER', 'EFT TO', 'EFT FROM', 'OUTWARD EFT', 'INWARD EFT', 'SEND MONEY', 'SEND IMALI',
+    'IMALI', 'CASH SEND', 'CASHSEND', 'INSTANT MONEY', 'PAYSHAP', 'OWN ACCOUNT', 'INTER ACCOUNT',
+    'INTERACCOUNT', 'LOAN ACCOUNT', 'REAL TIME CLEARING', 'RTC PAYMENT',
+  ];
+  const PRIVATE_RX = new RegExp('(?:^|[^A-Z])(?:' + PRIVATE_WORDING.map(w => w.replace(/ /g, '[\\s-]*')).join('|') + ')(?![A-Z])');
+  const PERSON_RX = [
+    /^(?:MR|MRS|MS|MISS|DR|PROF|ADV) [A-Z]/,             // a title
+    /^(?:[A-Z] ){1,3}[A-Z']{2,}(?: [A-Z']{2,})?$/,         // initials + surname: "J SMITH", "A B DLAMINI"
+  ];
+  function isPrivate(reference, key) {
+    const ref = String(reference || '').toUpperCase();
+    if (/\bFEES?\s*$/.test(ref.replace(/[^A-Z ]+/g, ' ').trim())) return false;
+    if (PRIVATE_RX.test(ref)) return true;
+    return !!key && PERSON_RX.some(rx => rx.test(key));
+  }
+
+  /* ---------- category precedence and merchant memory ----------
+     Every transaction carries cat_source, shown next to its category:
+       'confirmed' — a human chose it, here or for the same merchant before
+       'rule'      — a keyword rule, or a bank fee the statement itself marks
+       'ai'        — an AI suggestion (high confidence) for a merchant no rule knows
+       'review'    — nothing trustworthy yet: Uncategorised, needs a human
+     Order for every row: confirmed memory → rule → AI suggestion → needs review.
+     'confirmed' is sticky: nothing but another human choice changes it.
+     memory: { [merchantKey]: { category, source: 'confirmed' | 'ai', times, confidence? } }
+       times = how many times a human has confirmed this merchant. */
+  function applyCategories(txns, memory, customCategories) {
+    const mem = memory || {};
+    const usable = c => c && validCategory(c, customCategories) === c && c !== 'Uncategorised';
+    txns.forEach(t => {
+      if (t.locked || t.cat_source === 'confirmed') return;
+      const set = (category, source, hint) => { t.category = category; t.cat_source = source; t.ai_hint = hint || null; };
+      if (t.bank_fee) { t.merchant_key = null; t.private = false; set('Bank Charges', 'rule'); return; }
+      const key = t.merchant_key !== undefined ? t.merchant_key : merchantKey(t.reference);
+      t.merchant_key = key;
+      t.private = isPrivate(t.reference, key);
+      const m = key ? mem[key] : null;
+      if (m && m.source === 'confirmed' && usable(m.category)) { set(m.category, 'confirmed'); return; }
+      const rule = categorise(t.reference);
+      if (rule !== 'Uncategorised') { set(rule, 'rule'); return; }
+      if (!t.private && m && m.source === 'ai' && usable(m.category)) {
+        if (m.confidence === 'high') { set(m.category, 'ai'); return; }
+        set('Uncategorised', 'review', m.category);   // low confidence: shown as a hint only
+        return;
+      }
+      set('Uncategorised', 'review');
+    });
+    return txns;
+  }
+
+  /* A human sets txn's category: it is saved to memory as Confirmed and
+     applied to every other row from the same merchant that a human has not
+     confirmed. Returns the other rows it changed. Rows with no merchant key
+     (bank fees, empty references) change on their own only. */
+  function confirmCategory(data, txn, category, memory) {
+    txn.category = category; txn.cat_source = 'confirmed'; txn.ai_hint = null;
+    const key = txn.bank_fee ? null : txn.merchant_key;
+    if (!key || !memory) return [];
+    const prev = memory[key];
+    memory[key] = { category, source: 'confirmed', times: (prev && prev.source === 'confirmed' ? prev.times || 0 : 0) + 1 };
+    const changed = [];
+    data.forEach(t => {
+      if (t === txn || t.locked || t.bank_fee || t.merchant_key !== key || t.cat_source === 'confirmed') return;
+      t.category = category; t.cat_source = 'confirmed'; t.ai_hint = null;
+      changed.push(t);
+    });
+    return changed;
+  }
+
   /* ---------- vision rows → parser rows ---------- */
   function num(v) {
     if (v === null || v === undefined || v === '') return null;
@@ -2496,7 +2579,7 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     continuity(results.filter(r => !r.error));
     results.forEach(r => {
       // a duplicate's rows are already counted under the original statement
-      r.txns = r.duplicateOf ? [] : rowsToTxns(r, deps.customCategories);
+      r.txns = r.duplicateOf ? [] : applyCategories(rowsToTxns(r, deps.customCategories), deps.merchantMemory, deps.customCategories);
     });
     return results;
   }
@@ -2528,10 +2611,11 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
       const star = row.star || 0;
       const rest = round2(row.amount - star);
       if (rest !== 0 || (!star && !row.fee)) out.push(txn(rest, row.reference, own));
-      if (star) out.push(txn(star, row.reference, 'Bank Charges', rest !== 0 ? { kind: 'fee' } : null));
+      // bank_fee: categorised by the statement itself (fee column / fee mark), never by memory, rules or AI
+      if (star) out.push(txn(star, row.reference, 'Bank Charges', Object.assign({ bank_fee: true }, rest !== 0 ? { kind: 'fee' } : null)));
       if (row.fee) {
         const alone = rest === 0 && !star;
-        out.push(txn(row.fee, alone ? row.reference : 'Bank fee: ' + row.reference, 'Bank Charges', alone ? null : { kind: 'fee' }));
+        out.push(txn(row.fee, alone ? row.reference : 'Bank fee: ' + row.reference, 'Bank Charges', Object.assign({ bank_fee: true }, alone ? null : { kind: 'fee' })));
       }
     });
     return out;
@@ -2547,7 +2631,8 @@ button:not(:disabled), select:not(:disabled), label.btn, .uv-drop-zone,
     readPage, chooseDecoding, readableRatio, pageRuns, groupLines, parsePages,
     checkRows, chooseFeeConvention, applyFeeConvention, FEE_CONVENTIONS, wholeStatement, continuity,
     fingerprint, markDuplicates, rowsToTxns, bankCharges, categorise,
-    merchantKey, MERCHANT_PREFIXES, MERCHANT_SUFFIXES, PLACE_SUFFIXES, validCategory, CATEGORIES, CATEGORY_RULES,
+    merchantKey, MERCHANT_PREFIXES, MERCHANT_SUFFIXES, PLACE_SUFFIXES,
+    applyCategories, confirmCategory, isPrivate, PRIVATE_WORDING, validCategory, CATEGORIES, CATEGORY_RULES,
     visionToRows, processFile, runBatch, isoDate,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : window);
@@ -2566,7 +2651,21 @@ const AppState = {
   customCategories: [],     // user-added category names
   knownStatements:  [],     // [{name, fingerprint}] every statement extracted so far, any
                             // session — a renamed copy of one is flagged as a duplicate
+  merchantMemory:   {},     // merchant key → {category, source: 'confirmed'|'ai', times, confidence?}
 };
+
+// Rows saved before categories carried a source: a category the keyword
+// rules wouldn't give was set by a human (Confirmed); a rule's own answer
+// is a Rule; Uncategorised needs review.
+function migrateCategorySources(txns) {
+  (txns || []).forEach(t => {
+    if (t.cat_source || t.locked) return;
+    t.merchant_key = t.bank_fee ? null : TF.merchantKey(t.reference);
+    t.private = TF.isPrivate(t.reference, t.merchant_key);
+    t.cat_source = t.category === 'Uncategorised' ? 'review'
+      : t.category === TF.categorise(t.reference) || t.category === 'Bank Charges' ? 'rule' : 'confirmed';
+  });
+}
 
 // ── Persistence ──
 const Store = (() => {
@@ -2579,6 +2678,7 @@ const Store = (() => {
         customCategories: AppState.customCategories,
         reconResults:     AppState.reconResults,
         knownStatements:  AppState.knownStatements,
+        merchantMemory:   AppState.merchantMemory,
         savedAt:          new Date().toISOString(),
       };
       localStorage.setItem(KEY, JSON.stringify(payload));
@@ -2594,6 +2694,8 @@ const Store = (() => {
       if (p.customCategories) AppState.customCategories  = p.customCategories;
       if (p.reconResults)     AppState.reconResults      = p.reconResults;
       if (p.knownStatements)  AppState.knownStatements   = p.knownStatements;
+      if (p.merchantMemory)   AppState.merchantMemory    = p.merchantMemory;
+      migrateCategorySources(AppState.reviewData);
       return p.savedAt || true;
     } catch(e) { return false; }
   }
@@ -2601,7 +2703,7 @@ const Store = (() => {
     localStorage.removeItem(KEY);
     AppState.reviewData = [];
     AppState.committedData = null; AppState.customCategories = [];
-    AppState.reconResults = []; AppState.knownStatements = [];
+    AppState.reconResults = []; AppState.knownStatements = []; AppState.merchantMemory = {};
   }
   function exportSidecar() {
     const payload = {
@@ -2610,6 +2712,7 @@ const Store = (() => {
       committedData: AppState.committedData,
       customCategories: AppState.customCategories,
       knownStatements:  AppState.knownStatements,
+      merchantMemory:   AppState.merchantMemory,
       exportedAt:    new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -2626,6 +2729,8 @@ const Store = (() => {
     if (p.committedData)    AppState.committedData     = p.committedData;
     if (p.customCategories) AppState.customCategories  = p.customCategories;
     if (p.knownStatements)  AppState.knownStatements   = p.knownStatements;
+    if (p.merchantMemory)   AppState.merchantMemory    = p.merchantMemory;
+    migrateCategorySources(AppState.reviewData);
     save();
     return p.exportedAt;
   }
@@ -3105,6 +3210,7 @@ const Extractor = (() => {
       concurrency: 3,
       log: _log,
       customCategories: AppState.customCategories,
+      merchantMemory: AppState.merchantMemory,
     };
 
     for (let i = 0; i < pending.length; i++) {
@@ -4475,11 +4581,16 @@ const CategoryPicker = (() => {
     const data  = getData();
     const idSet = new Set(ids.map(String));
     let applied = 0;
+    const others = new Set();
     data.forEach(t => {
-      if (!t.locked && idSet.has(String(t.id))) { t.category = newCat; applied++; }
+      if (!t.locked && idSet.has(String(t.id))) {
+        TF.confirmCategory(data, t, newCat, AppState.merchantMemory).forEach(o => others.add(o));
+        applied++;
+      }
     });
+    const otherCount = [...others].filter(o => !idSet.has(String(o.id))).length;
     close();
-    onChange?.(applied);
+    onChange?.(applied, otherCount);
   }
 
   function filterList(query) {
@@ -4506,11 +4617,11 @@ const CategoryPicker = (() => {
       return;
     }
 
-    txn.category = newCat;
+    const others = TF.confirmCategory(data, txn, newCat, AppState.merchantMemory).length;
 
     const onChange = _openOpts.onChange;
     close();
-    onChange?.();
+    onChange?.(others);
   }
 
   function addNew() {
@@ -4739,7 +4850,9 @@ const BulkCategorize = (() => {
       if (!txn) { notFound++; return; }
       if (txn.locked) { skippedLocked++; return; }
       const newCat = String(r.category ?? r.Category ?? '').trim();
-      if (newCat && newCat !== txn.category) { txn.category = newCat; applied++; }
+      if (newCat && (newCat !== txn.category || txn.cat_source !== 'confirmed')) {
+        TF.confirmCategory(data, txn, newCat, AppState.merchantMemory); applied++;
+      }
     });
     opts.onApplied(applied, rows.length, { skippedLocked, notFound, ambiguous });
   }
@@ -5027,13 +5140,25 @@ const Review = (() => {
       cats.map(c => `<option value="${c}" ${prev===c?'selected':''}>${c}</option>`).join('');
   }
 
+  // Short inline confirmation under the toolbar (replaces an alert).
+  let _noteTimer = null;
+  function _note(msg) {
+    const el = document.getElementById('rv-note');
+    if (!el) return;
+    el.textContent = msg || '';
+    clearTimeout(_noteTimer);
+    if (msg) _noteTimer = setTimeout(() => { el.textContent = ''; }, 8000);
+  }
+  const _othersMsg = (n) => n ? ` Applied to ${n} other row${n !== 1 ? 's' : ''} from this merchant.` : '';
+
   function openPicker(e) {
     CategoryPicker.open(e, {
       getData:  () => AppState.reviewData,
-      onChange: () => {
+      onChange: (others) => {
         Store.save();
         _refreshCatFilter();
         _render();
+        _note(('Category confirmed and remembered for this merchant.' + _othersMsg(others)).trim());
       }
     });
   }
@@ -5083,12 +5208,12 @@ const Review = (() => {
     CategoryPicker.openBulk(anchorEl, {
       ids: [..._selected],
       getData: () => AppState.reviewData,
-      onChange: (applied) => {
+      onChange: (applied, others) => {
         Store.save();
         _refreshCatFilter();
         _selected.clear();
         _render();
-        if (applied != null) alert(`Updated ${applied} transaction${applied !== 1 ? 's' : ''}.`);
+        if (applied != null) _note(`Updated ${applied} transaction${applied !== 1 ? 's' : ''}.` + _othersMsg(others));
       }
     });
   }
