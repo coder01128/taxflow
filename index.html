@@ -2854,6 +2854,20 @@ const Modal = (() => {
   return { confirm };
 })();
 
+/* A statement whose rows were removed from Review is no longer "known":
+   drop its fingerprint everywhere duplicates are looked up (known
+   statements, committed metadata) and remove it from this session,
+   so uploading it again later isn't flagged as a duplicate of nothing. */
+function forgetStatement(name) {
+  AppState.knownStatements = (AppState.knownStatements || []).filter(k => k.name !== name);
+  const meta = AppState.committedData && AppState.committedData.metadata;
+  if (meta && meta.statements) meta.statements = meta.statements.filter(k => k.name !== name);
+  // the statement leaves this session too: otherwise the next extraction run
+  // would merge its already-extracted rows straight back into Review
+  AppState.unlockedFiles = AppState.unlockedFiles.filter(f => f.name !== name);
+  AppState.reconResults = (AppState.reconResults || []).filter(r => r.name !== name);
+}
+
 // ── Persistence ──
 const Store = (() => {
   const KEY = 'taxflow_v1';
@@ -5307,6 +5321,7 @@ const Review = (() => {
     if (!confirm(msg)) return;
 
     AppState.reviewData = AppState.reviewData.filter(t => !(matches(t) && !t.locked));
+    forgetStatement(val);
     Store.save();
     _sourceFilter = '';
     render();

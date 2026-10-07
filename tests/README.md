@@ -45,3 +45,41 @@ node tests/api-extract.test.js
 Exercises `api/extract.js` with a mocked `fetch` and a dummy key that exists
 only inside the test process: method/image/size/format checks, that the
 browser can't override the prompt, model or max_tokens, and the error paths.
+
+## Categorisation — `merchant-key.test.js`, `categorise.test.js`, `api-categorise.test.js`
+
+```bash
+node tests/merchant-key.test.js
+node tests/categorise.test.js
+node tests/api-categorise.test.js
+```
+
+Made-up references only, no network. `merchant-key` checks the normaliser
+(shapes, same merchant across formats, similar merchants never merging, no
+numbers surviving). `categorise` checks the precedence (confirmed memory →
+rule → AI suggestion → needs review), merchant memory and one-click
+propagation, and the AI flow with a mocked AI: only unseen, non-private
+merchant keys are sent, high/low/invalid answers, failure, opened from
+disk, 200-key batching. `api-categorise` exercises `api/categorise.js` like
+the extract test (limits, refusing raw references, fixed prompt/model,
+category list equal to the app's).
+
+## Balance correction — `correction.test.js`
+
+```bash
+node tests/correction.test.js [--image <image-only sample>] [--bad <bad-balance pdf>]
+```
+
+Unit cases, plus the image-only copy of the sample with a mocked vision
+misread (must be offered exactly R28,500.00) and the bad-balance file (no
+offer). Both PDFs default to the lab folder outside the repo.
+
+## Browser — `browser-dedupe.test.mjs`
+
+```bash
+node tests/browser-dedupe.test.mjs [--chrome <path to chrome.exe>]
+```
+
+Drives headless Chrome over the DevTools protocol (no npm packages) with the
+built-in sample: "Remove Source" must forget the statement's fingerprint, so
+uploading it again is not a duplicate, and its rows must not come back.
